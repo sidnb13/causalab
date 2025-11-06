@@ -174,7 +174,7 @@ class PatchResidualStream(InterventionExperiment):
     def plot_heatmaps(self, results: Dict, target_variables, save_path: str = None, average_counterfactuals: bool = False):
         """
         Generate heatmaps visualizing intervention scores across layers and positions.
-        
+
         Args:
             results: Dictionary containing experiment results from interpret_results()
             target_variables: List of variable names being analyzed
@@ -182,15 +182,17 @@ class PatchResidualStream(InterventionExperiment):
             average_counterfactuals: If True, averages scores across counterfactual datasets
         """
         target_variables_str = "-".join(target_variables)
-        
+
         token_ids = [token_pos.id for token_pos in self.token_positions]
         layers = list(reversed(self.layers))
 
+        # Determine if this is attribution patching for proper labeling
+        is_attribution = results.get("method_name") == "attribution_patching"
 
         if average_counterfactuals:
-            self._plot_average_heatmap(results, layers, token_ids, target_variables_str, save_path)
+            self._plot_average_heatmap(results, layers, token_ids, target_variables_str, save_path, is_attribution)
         else:
-            self._plot_individual_heatmaps(results, layers, token_ids, target_variables_str, save_path)
+            self._plot_individual_heatmaps(results, layers, token_ids, target_variables_str, save_path, is_attribution)
     
     def _build_score_matrix(self,
                             results: Dict,
@@ -270,7 +272,7 @@ class PatchResidualStream(InterventionExperiment):
             raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
     def _plot_average_heatmap(self, results: Dict, layers: List, positions: List,
-                             target_variables_str: str, save_path: Optional[str] = None):
+                             target_variables_str: str, save_path: Optional[str] = None, is_attribution: bool = False):
         """Create and save/display an averaged heatmap across all datasets."""
         # Build score matrices for all datasets
         matrices = self._build_score_matrix(results, layers, positions, target_variables_str)
@@ -285,20 +287,28 @@ class PatchResidualStream(InterventionExperiment):
         dataset_name = list(matrices.keys())[-1]
         safe_dataset_name = dataset_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
 
+        # Set title based on method type
+        metric_name = "Normalized Attribution Score" if is_attribution else "Intervention Accuracy"
+        title = f'{metric_name} - Dataset: {dataset_name}\nTask: {results["task_name"]}\nIntervened Variables: {target_variables_str}'
+
         # Create the heatmap
         self._create_heatmap(
             score_matrix=score_matrix,
             layers=layers,
             positions=positions,
-            title=f'Intervention Accuracy - Dataset: {dataset_name}\nTask: {results["task_name"]}\nIntervened Variables: {target_variables_str}',
-            save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_task_{results["task_name"]}_variables_{target_variables_str}.png') if save_path else None
+            title=title,
+            save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_task_{results["task_name"]}_variables_{target_variables_str}.png') if save_path else None,
+            is_attribution=is_attribution
         )
     
     def _plot_individual_heatmaps(self, results: Dict, layers: List, positions: List,
-                                 target_variables_str: str, save_path: Optional[str] = None):
+                                 target_variables_str: str, save_path: Optional[str] = None, is_attribution: bool = False):
         """Create and save/display individual heatmaps for each dataset."""
         # Build score matrices for all datasets
         matrices = self._build_score_matrix(results, layers, positions, target_variables_str)
+
+        # Set metric name based on method type
+        metric_name = "Normalized Attribution Score" if is_attribution else "Intervention Accuracy"
 
         # Create individual heatmaps for each dataset
         for dataset_name, score_matrix in matrices.items():
@@ -310,25 +320,30 @@ class PatchResidualStream(InterventionExperiment):
                 score_matrix=score_matrix,
                 layers=layers,
                 positions=positions,
-                title=f'Intervention Accuracy - Dataset: {dataset_name}\nTask: {results["task_name"]}\nIntervened Variables: {target_variables_str}',
-                save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_task_{results["task_name"]}_variables_{target_variables_str}.png') if save_path else None
+                title=f'{metric_name} - Dataset: {dataset_name}\nTask: {results["task_name"]}\nIntervened Variables: {target_variables_str}',
+                save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_task_{results["task_name"]}_variables_{target_variables_str}.png') if save_path else None,
+                is_attribution=is_attribution
             )
     
-    def _create_heatmap(self, score_matrix: np.ndarray, layers: List, positions: List, 
-                       title: str, save_path: Optional[str] = None):
+    def _create_heatmap(self, score_matrix: np.ndarray, layers: List, positions: List,
+                       title: str, save_path: Optional[str] = None, is_attribution: bool = False):
         """
         Create and save/display a single heatmap.
-        
+
         Args:
             score_matrix: 2D numpy array with scores for each (layer, position) pair
             layers: List of layer indices
             positions: List of position names
             title: Title for the heatmap
             save_path: Path to save the heatmap, or None to display it
+            is_attribution: Whether this is attribution patching (affects labels)
         """
         plt.figure(figsize=(10, 6))
         display_matrix = np.round(score_matrix * 100, 2)
-        
+
+        # Set colorbar label based on method type
+        cbar_label = 'Normalized Attribution Score (%)' if is_attribution else 'Accuracy (%)'
+
         # Create the heatmap using seaborn
         sns.heatmap(
             score_matrix,
@@ -337,11 +352,11 @@ class PatchResidualStream(InterventionExperiment):
             cmap='viridis',
             annot=display_matrix,
             fmt="g",
-            cbar_kws={'label': 'Accuracy (%)'},
+            cbar_kws={'label': cbar_label},
             vmin=0,
             vmax=1,
         )
-        
+
         plt.yticks(rotation=0)
         plt.xlabel('Position')
         plt.ylabel('Layer')

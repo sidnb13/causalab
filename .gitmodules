@@ -1,0 +1,4 @@
+[submodule "pyvene"]
+	path = pyvene
+	url = git@github.com:sidnb13/pyvene.git
+	branch = unsafe_grad_flow

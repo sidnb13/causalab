@@ -11,7 +11,7 @@ intervention execution, and training functions.
 import gc
 import collections
 import logging
-from typing import List, Dict, Union
+from typing import List, Dict, Literal, Union
 
 import torch
 from torch.utils.data import DataLoader
@@ -459,6 +459,208 @@ def _collect_features(dataset, pipeline, model_units_list, config, verbose=False
     # Return nested list structure:
     # data[i][j] = tensor of shape (n_samples, n_features) for unit j in group i
     return data
+
+
+def _run_attribution_patching(
+    pipeline: Pipeline,
+    counterfactual_dataset: CounterfactualDataset,
+    model_units_list: List[List[AtomicModelUnit]],
+    verbose: bool = False,
+    batch_size=32,
+) -> List[List[Dict[str, torch.Tensor]]]:
+    """
+    Run attribution patching on a counterfactual dataset.
+
+    Attribution patching approximates intervention effects using gradients:
+        attribution_score ≈ ∇L · (h_counterfactual - h_base)
+
+    This function:
+    1. Computes base activations with gradients (using standard LM loss)
+    2. Computes counterfactual activations without gradients
+    3. Calculates attribution scores as the dot product of gradients and activation differences
+
+    Args:
+        pipeline: The language model pipeline
+        counterfactual_dataset: Dataset with base and counterfactual inputs
+        model_units_list: Model units to compute attributions for
+        verbose: Whether to show progress bars
+        batch_size: Batch size for processing
+
+    Returns:
+        Nested list of dicts containing base/cf activations, gradients, and attribution scores
+    """
+    # Use collect intervention type to get activations with gradients
+    intervenable_model = _prepare_intervenable_model(
+        pipeline, model_units_list, intervention_type="collect"
+    )
+
+    # This ensures activations are part of the computation graph
+    intervenable_model.enable_model_gradients()
+
+    dataloader = DataLoader(
+        counterfactual_dataset.dataset,
+        batch_size=batch_size,
+        shuffle=False,  # Preserve original order
+        collate_fn=shallow_collate_fn,  # Use custom collate function to preserve nested structures
+    )
+
+    # Initialize container for collected features: one list per model unit group
+    data = [
+        [{"base": [], "cf": [], "grad": []} for _ in range(len(model_units))]
+        for model_units in model_units_list
+    ]
+
+    # Process dataset in batches with progress tracking
+    for batch in tqdm(
+        dataloader, desc="Processing batches", disable=not verbose, leave=False
+    ):
+        # Prepare batch data including base and counterfactual inputs
+        batched_base, batched_counterfactuals, inv_locations, feature_indices = (
+            _prepare_intervenable_inputs(pipeline, batch, model_units_list)
+        )
+        batch_len = batched_base["input_ids"].shape[0]
+
+        # Extract indices for mapping between base and source
+        source_indices, base_indices = inv_locations["sources->base"]
+
+        def process_activations(
+            activations_list,
+            model_units_list,
+            batch_len,
+            data_container,
+            mode: Literal["base", "cf"],
+        ):
+            total_units = sum(len(unit_group) for unit_group in model_units_list)
+
+            if len(activations_list) == total_units:
+                # pyvene 0.1.8+ format: one tensor per unit containing all batch samples
+                activation_idx = 0
+                for i in range(len(model_units_list)):
+                    for j in range(len(model_units_list[i])):
+                        unit_activations = activations_list[activation_idx]
+                        hidden_size = unit_activations.shape[-1]
+                        activations = unit_activations.reshape(-1, hidden_size)
+                        data_container[i][j][mode].extend(activations.cpu())
+                        if mode == "base":
+                            grads = unit_activations.grad.reshape(-1, hidden_size)
+                            data_container[i][j]["grad"].extend(grads.cpu())
+                        activation_idx += 1
+            else:
+                raise ValueError(
+                    f"Unexpected activations format. Length: {len(activations_list)}, "
+                    f"Expected either {total_units} or {total_units * batch_len}"
+                )
+
+        # Create mapping for base input activations (identical source and target)
+        base_map = {"sources->base": (base_indices, base_indices)}
+
+        with torch.set_grad_enabled(True):
+            # Single forward pass with intervenable_model returns BOTH outputs and activations
+            result = intervenable_model(
+                batched_base,
+                unit_locations=base_map,
+                output_original_output=True,
+                unsafe=True,
+                return_dict=True,
+            )
+
+            model_outputs = result.intervened_outputs
+            base_activations = result.collected_activations
+
+            for activation in base_activations:
+                activation.retain_grad()
+
+            # Extract logits
+            logits = model_outputs.logits if hasattr(model_outputs, 'logits') else model_outputs
+
+            # Compute standard LM loss (next token prediction) with attention mask
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = batched_base["input_ids"][..., 1:].contiguous()
+
+            # Mask padding tokens - set them to -100 (ignored by CrossEntropyLoss)
+            if "attention_mask" in batched_base:
+                shift_attention_mask = batched_base["attention_mask"][..., 1:].contiguous()
+                shift_labels = shift_labels.masked_fill(shift_attention_mask == 0, -100)
+
+            # Use float32 for loss computation on MPS to avoid numerical issues
+            loss_fct = torch.nn.CrossEntropyLoss()
+            if shift_logits.dtype == torch.float16:
+                # Upcast to float32 for stable loss computation
+                loss = loss_fct(
+                    shift_logits.float().view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1)
+                )
+            else:
+                loss = loss_fct(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1)
+                )
+
+            # Backward pass to populate gradients on base_activations
+            loss.backward()
+
+            # populate container with base and cf activations
+            process_activations(
+                base_activations, model_units_list, batch_len, data, mode="base"
+            )
+            del batched_base
+            del base_activations
+
+        # Collect counterfactual activations (no gradients needed)
+        source_map = {"sources->base": (source_indices, source_indices)}
+        with torch.no_grad():
+            # loop over GROUPS
+            for counterfactual in batched_counterfactuals:
+                counterfactual_activations = intervenable_model(
+                    counterfactual, unit_locations=source_map
+                )[0][1]
+                process_activations(
+                    counterfactual_activations, model_units_list, batch_len, data, mode="cf"
+                )
+                del counterfactual_activations
+        del batched_counterfactuals
+
+    # data[i][j] = tensor of shape (n_samples, n_features) for unit j in group i
+    data = [
+        [
+            {
+                "base": torch.stack(datum["base"]),
+                "cf": torch.stack(datum["cf"]),
+                "grad": torch.stack(datum["grad"]),
+            }
+            for datum in x
+        ]
+        for x in data
+    ]
+
+    # attribution score computation (use absolute value for magnitude of effect)
+    for i in range(len(data)):
+        for j in range(len(data[i])):
+            data[i][j]["attribution_score"] = torch.abs(torch.sum(
+                data[i][j]["grad"] * (data[i][j]["cf"] - data[i][j]["base"]), dim=-1
+            ).mean(dim=0))
+
+    # Normalize attribution scores to [0, 1] range for comparability with accuracy scores
+    all_scores = [data[i][j]["attribution_score"].item() for i in range(len(data)) for j in range(len(data[i]))]
+    min_score = min(all_scores)
+    max_score = max(all_scores)
+
+    if max_score > min_score:  # Avoid division by zero
+        for i in range(len(data)):
+            for j in range(len(data[i])):
+                score = data[i][j]["attribution_score"].item()
+                data[i][j]["attribution_score"] = (score - min_score) / (max_score - min_score)
+    else:
+        # All scores are the same, set to 0
+        for i in range(len(data)):
+            for j in range(len(data[i])):
+                data[i][j]["attribution_score"] = 0.0
+
+    # Clean up the intervenable model to free GPU memory
+    _delete_intervenable_model(intervenable_model)
+
+    return data
+
 
 def _train_intervention(pipeline: Pipeline,
                         model_units_list: List[AtomicModelUnit],

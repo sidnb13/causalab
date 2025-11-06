@@ -1,3 +1,36 @@
+[project]
+name = "causal-abstraction"
+version = "0.0.0"
+description = "A toolkit for causal analysis of artificial neural networks."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Atticus Geiger" }
+]
+dependencies = [
+    "torch",
+    "networkx",
+    "matplotlib",
+    "pandas",
+    "numpy",
+    "pyvene @ pyvene",
+    "scikit-learn",
+    "ipywidgets",
+    "jupyterlab",
+    "ipycytoscape",
+    "seaborn",
+    "transformers",
+    "tensorboard",
+    "dash",
+    "dash-cytoscape",
+    "jupyter-dash",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
 [tool.poetry]
 name = "causal-abstraction"
 version = "0.0.0"

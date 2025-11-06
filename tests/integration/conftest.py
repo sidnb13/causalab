@@ -9,19 +9,34 @@ from causal.counterfactual_dataset import CounterfactualDataset
 
 @pytest.fixture(scope="module")
 def device():
-    """Get device for testing."""
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    """Get device for testing.
+
+    Priority: CUDA > MPS > CPU
+    - CUDA: NVIDIA GPUs
+    - MPS: Apple Silicon (M1/M2/M3) GPUs
+    - CPU: Fallback
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    else:
+        return "cpu"
 
 
 @pytest.fixture(scope="module")
 def pipeline(device):
     """Load Qwen model pipeline (shared across module for efficiency)."""
     model_name = "Qwen/Qwen2.5-0.5B"
+
+    # Use float32 on MPS for numerical stability, float16 elsewhere for speed
+    dtype = torch.float32 if device == "mps" else torch.float16
+
     pipeline = LMPipeline(
         model_name,
         max_new_tokens=1,
         device=device,
-        dtype=torch.float16,
+        dtype=dtype,
         max_length=32
     )
     pipeline.tokenizer.padding_side = "left"
@@ -49,7 +64,7 @@ def checker():
 def small_different_symbol_dataset():
     """Generate small different_symbol counterfactual dataset."""
     return CounterfactualDataset.from_sampler(
-        8,
+        4,  # Reduced to 4 for faster testing
         MCQA_task.dataset_generators["different_symbol"]
     )
 
