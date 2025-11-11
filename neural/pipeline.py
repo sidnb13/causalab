@@ -13,9 +13,20 @@ __all__ = ["Pipeline", "LMPipeline"]
 # ---------------------------------------------------------------------------
 
 def _infer_device_and_dtype(requested_device=None, requested_dtype=None):
-    """Return a sensible `(device, dtype)` pair when not fully specified."""
+    """Return a sensible `(device, dtype)` pair when not fully specified.
+    
+    Priority: CUDA > MPS > CPU
+    - CUDA: NVIDIA GPUs
+    - MPS: Apple Silicon (M1/M2/M3) GPUs  
+    - CPU: Fallback
+    """
     if requested_device is None:
-        requested_device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            requested_device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            requested_device = "mps"
+        else:
+            requested_device = "cpu"
     if requested_dtype is None:
         requested_dtype = torch.float16 if requested_device.startswith("cuda") else torch.float32
     return requested_device, requested_dtype
@@ -132,7 +143,7 @@ class LMPipeline(Pipeline):
         input: Union[Dict, List[Dict], str, List[str]],
         *,
         max_length: int | None = None,
-        padding_side: str | None = None,
+        padding_side: str | None = "left",
         add_special_tokens: bool = True,
         use_chat_template: bool | None = None,
         no_padding: bool = False,
@@ -241,7 +252,7 @@ class LMPipeline(Pipeline):
             return_dict_in_generate=True,
             output_scores=True,
             do_sample=False,
-            use_cache=False,
+            use_cache=True,
         )
         defaults.update(gen_kwargs)
         with torch.no_grad():
@@ -275,7 +286,7 @@ class LMPipeline(Pipeline):
             output_scores=True,
             intervene_on_prompt=True,
             do_sample=False,
-            use_cache=False,
+            use_cache=True,
         )
         defaults.update(gen_kwargs)
         with torch.no_grad():

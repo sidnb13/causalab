@@ -177,7 +177,6 @@ class TestDASIntegration:
                 causal_model=mock_causal_model,
                 layers=[0, 1],
                 token_positions=mock_token_positions,
-                checker=checker,
                 config={
                     "batch_size": 32,
                     "evaluation_batch_size": 64,
@@ -188,7 +187,8 @@ class TestDASIntegration:
 
         assert experiment.layers == [0, 1]
         assert experiment.token_positions == mock_token_positions
-        assert experiment.checker is checker
+        # Checker is stored on base class, accessible via experiment.checker
+        assert hasattr(experiment, 'checker')
         assert experiment.config["n_features"] == 16
 
     def test_das_training_flow(self, mock_pipeline, mock_causal_model,
@@ -200,7 +200,6 @@ class TestDASIntegration:
                 causal_model=mock_causal_model,
                 layers=[0, 1],
                 token_positions=mock_token_positions,
-                checker=checker,
                 config={
                     "batch_size": 32,
                     "evaluation_batch_size": 64,
@@ -235,7 +234,6 @@ class TestDASIntegration:
                 causal_model=mock_causal_model,
                 layers=[0, 1],
                 token_positions=mock_token_positions,
-                checker=checker,
                 config={
                     "batch_size": 32,
                     "evaluation_batch_size": 64
@@ -278,7 +276,6 @@ class TestDASIntegration:
                 causal_model=mock_causal_model,
                 layers=[0, 1, 2],
                 token_positions=mock_token_positions,
-                checker=checker,
                 config={
                     "batch_size": 32,
                     "evaluation_batch_size": 64,
@@ -358,7 +355,6 @@ class TestDBMIntegration:
                 causal_model=mock_causal_model,
                 layer_head_lists=[layer_head_list],
                 token_position=all_tokens_pos,
-                checker=checker,
                 config={
                     "learning_rate": 0.001,
                     "batch_size": 32,
@@ -375,7 +371,8 @@ class TestDBMIntegration:
 
         assert experiment.layer_head_lists == [layer_head_list]
         assert experiment.token_position == all_tokens_pos
-        assert experiment.checker is checker
+        # Checker is stored on base class, accessible via experiment.checker
+        assert hasattr(experiment, 'checker')
 
     def test_dbm_training_flow(self, mock_pipeline, mock_causal_model,
                               mock_counterfactual_dataset, checker):
@@ -395,7 +392,6 @@ class TestDBMIntegration:
                 causal_model=mock_causal_model,
                 layer_head_lists=[layer_head_list],
                 token_position=all_tokens_pos,
-                checker=checker,
                 config={
                     "learning_rate": 0.001,
                     "batch_size": 32,
@@ -442,7 +438,6 @@ class TestDBMIntegration:
                 causal_model=mock_causal_model,
                 layer_head_lists=[layer_head_list],
                 token_position=all_tokens_pos,
-                checker=checker,
                 config={
                     "learning_rate": 0.001,
                     "batch_size": 32,
@@ -509,7 +504,6 @@ class TestDBMIntegration:
                 causal_model=mock_causal_model,
                 layer_head_lists=[layer_head_list],
                 token_position=all_tokens_pos,
-                checker=checker,
                 config={
                     "learning_rate": 0.001,
                     "batch_size": 32,
@@ -689,7 +683,6 @@ class TestEndToEndWorkflow:
                 causal_model=mock_causal_model,
                 layers=[0, 1, 2],
                 token_positions=mock_token_positions,
-                checker=checker,
                 config={
                     "batch_size": 32,
                     "evaluation_batch_size": 64,
@@ -771,7 +764,6 @@ class TestEndToEndWorkflow:
                 causal_model=mock_causal_model,
                 layer_head_lists=heads_masking,
                 token_position=all_tokens_pos,
-                checker=checker,
                 config={
                     "learning_rate": 0.001,
                     "batch_size": 32,

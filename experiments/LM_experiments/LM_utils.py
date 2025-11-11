@@ -11,13 +11,17 @@ def default_checker(neural_output, causal_output):
 
     Args:
         neural_output: Dict with 'string' key containing predicted text
-        causal_output: Dict with 'string' key containing expected text
+        causal_output: Either a dict with 'string' key or a string containing expected text
 
     Returns:
         bool: True if strings match exactly (after stripping), False otherwise
     """
     pred_str = neural_output["string"].strip()
-    expected_str = causal_output["string"].strip()
+    # Handle both dict and string inputs for causal_output
+    if isinstance(causal_output, dict):
+        expected_str = causal_output.get("string", str(causal_output)).strip()
+    else:
+        expected_str = str(causal_output).strip()
     return pred_str == expected_str
 
 
