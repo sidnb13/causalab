@@ -8,22 +8,22 @@ on the pyvene library. Key components include model preparation, data handling,
 intervention execution, and training functions.
 """
 
-import gc
 import collections
+import gc
 import logging
-from typing import List, Dict, Literal, Union
+from typing import Callable, Dict, List, Literal, Union
 
+import numpy as np
 import torch
+import transformers
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import transformers
-import pyvene as pv
-import numpy as np
 from tqdm import *
 
+import pyvene as pv
 from causal.counterfactual_dataset import CounterfactualDataset
-from neural.pipeline import Pipeline
 from neural.model_units import AtomicModelUnit
+from neural.pipeline import Pipeline
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -463,8 +463,10 @@ def _collect_features(dataset, pipeline, model_units_list, config, verbose=False
 
 def _run_attribution_patching(
     pipeline: Pipeline,
+    metric_fn: Callable,
     counterfactual_dataset: CounterfactualDataset,
     model_units_list: List[List[AtomicModelUnit]],
+    get_correct_token_fn: Callable,
     verbose: bool = False,
     batch_size=32,
 ) -> List[List[Dict[str, torch.Tensor]]]:
@@ -475,14 +477,16 @@ def _run_attribution_patching(
         attribution_score ≈ ∇L · (h_counterfactual - h_base)
 
     This function:
-    1. Computes base activations with gradients (using standard LM loss)
+    1. Computes base activations with gradients using custom metric
     2. Computes counterfactual activations without gradients
     3. Calculates attribution scores as the dot product of gradients and activation differences
 
     Args:
         pipeline: The language model pipeline
+        metric_fn: Function to compute loss (receives logits and correct_token_ids)
         counterfactual_dataset: Dataset with base and counterfactual inputs
         model_units_list: Model units to compute attributions for
+        get_correct_token_fn: Function to extract correct answer token string from an input dict
         verbose: Whether to show progress bars
         batch_size: Batch size for processing
 
@@ -506,7 +510,7 @@ def _run_attribution_patching(
 
     # Initialize container for collected features: one list per model unit group
     data = [
-        [{"base": [], "cf": [], "grad": []} for _ in range(len(model_units))]
+        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "inputs": []} for _ in range(len(model_units))]
         for model_units in model_units_list
     ]
 
@@ -573,31 +577,25 @@ def _run_attribution_patching(
             # Extract logits
             logits = model_outputs.logits if hasattr(model_outputs, 'logits') else model_outputs
 
-            # Compute standard LM loss (next token prediction) with attention mask
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = batched_base["input_ids"][..., 1:].contiguous()
+            # Extract correct tokens and convert to IDs
+            correct_token_strings = [get_correct_token_fn(item) for item in batch['input']]
+            correct_token_ids = [
+                pipeline.tokenizer.encode(token, add_special_tokens=False)[0]
+                for token in correct_token_strings
+            ]
+            correct_token_ids = torch.tensor(correct_token_ids, device=logits.device)
 
-            # Mask padding tokens - set them to -100 (ignored by CrossEntropyLoss)
-            if "attention_mask" in batched_base:
-                shift_attention_mask = batched_base["attention_mask"][..., 1:].contiguous()
-                shift_labels = shift_labels.masked_fill(shift_attention_mask == 0, -100)
+            # Compute metric scores for each example (for later evaluation)
+            metric_scores = metric_fn(logits, correct_token_ids)
 
-            # Use float32 for loss computation on MPS to avoid numerical issues
-            loss_fct = torch.nn.CrossEntropyLoss()
-            if shift_logits.dtype == torch.float16:
-                # Upcast to float32 for stable loss computation
-                loss = loss_fct(
-                    shift_logits.float().view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1)
-                )
-            else:
-                loss = loss_fct(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1)
-                )
-
-            # Backward pass to populate gradients on base_activations
+            loss = metric_scores.mean()
             loss.backward()
+
+            # Store inputs and metric scores for each model unit
+            for i in range(len(model_units_list)):
+                for j in range(len(model_units_list[i])):
+                    data[i][j]["inputs"].extend(batch['input'])
+                    data[i][j]["metric_scores"].extend(metric_scores.detach().cpu().tolist())
 
             # populate container with base and cf activations
             process_activations(
@@ -627,6 +625,8 @@ def _run_attribution_patching(
                 "base": torch.stack(datum["base"]),
                 "cf": torch.stack(datum["cf"]),
                 "grad": torch.stack(datum["grad"]),
+                "inputs": datum["inputs"],  # Preserve inputs
+                "metric_scores": datum["metric_scores"],  # Preserve metric_scores
             }
             for datum in x
         ]
@@ -636,25 +636,10 @@ def _run_attribution_patching(
     # attribution score computation (use absolute value for magnitude of effect)
     for i in range(len(data)):
         for j in range(len(data[i])):
-            data[i][j]["attribution_score"] = torch.abs(torch.sum(
+            raw_score = torch.abs(torch.sum(
                 data[i][j]["grad"] * (data[i][j]["cf"] - data[i][j]["base"]), dim=-1
             ).mean(dim=0))
-
-    # Normalize attribution scores to [0, 1] range for comparability with accuracy scores
-    all_scores = [data[i][j]["attribution_score"].item() for i in range(len(data)) for j in range(len(data[i]))]
-    min_score = min(all_scores)
-    max_score = max(all_scores)
-
-    if max_score > min_score:  # Avoid division by zero
-        for i in range(len(data)):
-            for j in range(len(data[i])):
-                score = data[i][j]["attribution_score"].item()
-                data[i][j]["attribution_score"] = (score - min_score) / (max_score - min_score)
-    else:
-        # All scores are the same, set to 0
-        for i in range(len(data)):
-            for j in range(len(data[i])):
-                data[i][j]["attribution_score"] = 0.0
+            data[i][j]["attribution_score"] = raw_score
 
     # Clean up the intervenable model to free GPU memory
     _delete_intervenable_model(intervenable_model)

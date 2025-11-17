@@ -1,10 +1,108 @@
 """Utility functions for working with causal models."""
 
 from causal.counterfactual_dataset import CounterfactualDataset
-from typing import List, Dict, Tuple, Optional, Callable, Union
+from typing import List, Dict, Callable, Union
 import copy
 import numpy as np
 import torch
+
+
+class Checker:
+    """Base class for checking if intervention/attribution output is correct."""
+
+    def __call__(self, output_or_score, expected_label=None, is_intervention: bool = True) -> float:
+        """
+        Check correctness based on method type.
+
+        Args:
+            output_or_score: For interventions: output_dict with model outputs
+                           For attribution: metric score (e.g., from cheap_argmax)
+            expected_label: Expected output from causal model (only used for interventions)
+            is_intervention: True for regular interventions, False for attribution patching
+
+        Returns:
+            Score (typically 0 or 1) indicating correctness
+        """
+        if is_intervention:
+            return self.check_intervention(output_or_score, expected_label)
+        else:
+            return self.check_attribution(output_or_score)
+
+    def check_intervention(self, output_dict, expected_label) -> float:
+        """Check if regular intervention output matches expected label."""
+        raise NotImplementedError("Subclasses must implement check_intervention")
+
+    def check_attribution(self, metric_score) -> float:
+        """Check if attribution patching score indicates correctness."""
+        raise NotImplementedError("Subclasses must implement check_attribution")
+
+
+class StringMatchChecker(Checker):
+    """Checker that uses string matching for intervention correctness."""
+
+    def check_intervention(self, output_dict, expected_label) -> float:
+        """
+        Check if expected label appears in output string or vice versa.
+
+        This is the default logic used in compute_interchange_scores.
+        """
+        output_str = output_dict["string"]
+        result = expected_label in output_str or output_str in expected_label
+        return 1.0 if result else 0.0
+
+    def check_attribution(self, *args, **kwargs) -> float:
+        """Not implemented for string matching."""
+        raise NotImplementedError("StringMatchChecker only supports interventions")
+
+
+class ExactMatchChecker(Checker):
+    """Checker that uses exact string equality."""
+
+    def check_intervention(self, output_dict, expected_label) -> float:
+        """Check if output exactly matches expected label."""
+        return 1.0 if output_dict["string"] == expected_label else 0.0
+
+    def check_attribution(self, *args, **kwargs) -> float:
+        """Not implemented for exact matching."""
+        raise NotImplementedError("ExactMatchChecker only supports interventions")
+
+
+class CheapArgmaxChecker(Checker):
+    """Checker that uses cheap_argmax for attribution patching correctness."""
+
+    def check_intervention(self, output_dict, expected_label) -> float:
+        """Not supported - CheapArgmaxChecker is only for attribution patching."""
+        raise NotImplementedError("CheapArgmaxChecker only supports attribution patching")
+
+    @staticmethod
+    def compute_attribution(logits: torch.Tensor, correct_token_id: int) -> torch.Tensor:
+        """
+        Compute attribution score (margin between correct and next best token).
+
+        Args:
+            logits: Logits for the last token prediction (shape: vocab_size)
+            correct_token_id: Token ID of the correct answer
+
+        Returns:
+            Score representing margin (positive if correct token is most likely)
+        """
+        next_best = torch.topk(logits, k=2, dim=-1).indices[..., 1]
+        return logits[..., correct_token_id] - logits[..., next_best].detach()
+
+    def check_attribution(self, metric_score) -> float:
+        """
+        Check if metric score indicates correct prediction.
+
+        Args:
+            metric_score: Pre-computed cheap_argmax score
+
+        Returns:
+            1.0 if score > 0 (correct token most likely), 0.0 otherwise
+        """
+        if isinstance(metric_score, torch.Tensor):
+            metric_score = metric_score.item()
+
+        return 1.0 if metric_score > 0 else 0.0
 
 
 def can_distinguish_with_dataset(
@@ -110,6 +208,114 @@ def statement_conjunction_function(filled_statements: List, delimiters: list) ->
         conjunction += new_delimiters[i-1] + statements[i]
     conjunction += new_delimiters[-1]
     return conjunction
+
+
+def _detach_tensors(obj):
+    """Recursively detach PyTorch tensors in nested structures."""
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu()
+    elif isinstance(obj, dict):
+        return {key: _detach_tensors(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [_detach_tensors(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_detach_tensors(item) for item in obj)
+    else:
+        return obj
+
+
+def compute_attribution_scores(
+    raw_results: Dict,
+    causal_model,
+    datasets: Union[Dict, "CounterfactualDataset"],
+    target_variables_list: List[List[str]],
+    checker: Callable,
+) -> Dict:
+    """
+    Compute attribution scores for target variables using checker.
+
+    Similar to compute_interchange_scores, but for attribution patching.
+    Uses the stored metric scores and inputs to evaluate correctness per target variable.
+
+    Args:
+        raw_results: Dictionary from perform_attribution_patching containing
+                    metric_scores and inputs for each example
+        causal_model: CausalModel used to generate expected outputs
+        datasets: Dictionary mapping dataset names to CounterfactualDataset objects,
+                 or single CounterfactualDataset (will be converted to dict)
+        target_variables_list: List of target variable groups to evaluate
+        checker: Checker instance to evaluate correctness (should support is_intervention=False)
+
+    Returns:
+        Dictionary with same structure as compute_interchange_scores:
+            results["dataset"][dataset_name]["model_unit"][unit_str][target_var_str] = {
+                "scores": [...],
+                "average_score": float
+            }
+    """
+    # Convert single dataset to dictionary
+    if isinstance(datasets, CounterfactualDataset):
+        datasets = {datasets.id: datasets}
+
+    # Detach tensors before deep copying (tensors with gradients can't be deep copied)
+    raw_results_detached = _detach_tensors(raw_results)
+    
+    # Create a deep copy to avoid modifying the input
+    results = copy.deepcopy(raw_results_detached)
+
+    # Process each dataset and model unit combination
+    for dataset_name in datasets.keys():
+        if dataset_name not in results["dataset"]:
+            continue
+
+        for model_units_str, model_unit_data in results["dataset"][dataset_name][
+            "model_unit"
+        ].items():
+            if model_unit_data is None:
+                continue
+
+            # Get stored metric scores and inputs from attribution patching
+            attribution_data = model_unit_data.get("attribution_data")
+            if attribution_data is None or len(attribution_data) == 0:
+                continue
+
+            # Get the first unit's data (they all have the same inputs/metric_scores)
+            unit_data = attribution_data[0][0]
+            inputs = unit_data.get("inputs", [])
+            metric_scores = unit_data.get("metric_scores", [])
+
+            if not inputs or not metric_scores:
+                continue
+
+            # Evaluate for each target variable
+            for target_variables in target_variables_list:
+                target_variable_str = "-".join(target_variables)
+
+                # Generate expected outputs from causal model
+                labeled_data = causal_model.label_counterfactual_data(
+                    datasets[dataset_name], target_variables
+                )
+
+                # Validate alignment
+                assert len(labeled_data) == len(inputs), (
+                    f"Length mismatch: {len(labeled_data)} vs {len(inputs)}"
+                )
+                assert len(labeled_data) == len(metric_scores), (
+                    f"Length mismatch: {len(labeled_data)} vs {len(metric_scores)}"
+                )
+
+                # Compute correctness scores using checker
+                scores = []
+                for metric_score in metric_scores:
+                    score = checker(metric_score, is_intervention=False)
+                    scores.append(score)
+
+                # Store processed results
+                results["dataset"][dataset_name]["model_unit"][model_units_str][
+                    target_variable_str
+                ] = {"scores": scores, "average_score": np.mean(scores)}
+
+    return results
 
 
 def compute_interchange_scores(

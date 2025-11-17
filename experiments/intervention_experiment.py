@@ -1,22 +1,28 @@
-from typing import List, Dict, Callable, Tuple, Union
-import gc, json, os, collections, random, copy
+import copy
+import json
+import os
 from itertools import chain
+from typing import Callable, Dict, List
 
-import pyvene as pv
-import torch
-from torch.utils.data import DataLoader
 import numpy as np
-from sklearn.decomposition import TruncatedSVD 
-from tqdm import tqdm, trange
+import torch
 from datasets import Dataset
+from sklearn.decomposition import TruncatedSVD
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
+from causal.causal_utils import compute_interchange_scores
+from causal.counterfactual_dataset import CounterfactualDataset
+from experiments.config import DEFAULT_CONFIG
+from experiments.pyvene_core import (
+    _collect_features,
+    _run_attribution_patching,
+    _run_interchange_interventions,
+    _train_intervention,
+    shallow_collate_fn,
+)
 from neural.model_units import *
 from neural.pipeline import Pipeline
-from causal.causal_model import CausalModel
-from causal.counterfactual_dataset import CounterfactualDataset
-from experiments.pyvene_core import _run_interchange_interventions, _train_intervention, _collect_features, _run_attribution_patching, shallow_collate_fn
-from experiments.config import DEFAULT_CONFIG
-from causal.causal_utils import compute_interchange_scores
 
 
 class InterventionExperiment:
@@ -259,7 +265,7 @@ class InterventionExperiment:
 
         return results
 
-    def perform_attribution_patching(self, datasets, verbose: bool = False, target_variables_list: List[List[str]] = None, save_dir=None):
+    def perform_attribution_patching(self, datasets, metric_fn: Callable, get_correct_token_fn: Callable, target_variables_list: List[List[str]], verbose: bool = False, save_dir=None):
         """
         Perform attribution patching to approximate intervention effects using gradients.
 
@@ -280,9 +286,10 @@ class InterventionExperiment:
         Args:
             datasets: Dictionary mapping dataset names to CounterfactualDataset objects,
                      or a single CounterfactualDataset
+            metric_fn: Function to compute loss (receives logits and correct_token_ids)
+            get_correct_token_fn: Function to extract correct answer token string from input dict
+            target_variables_list: List of causal variable groups to evaluate (e.g., [["answer"], ["answer_position"]])
             verbose: Whether to show progress bars during execution
-            target_variables_list: List of causal variable groups (used for labeling in results).
-                                  If None, uses "attribution" as default label.
             save_dir: Directory to save results (if provided)
 
         Returns:
@@ -292,10 +299,6 @@ class InterventionExperiment:
         # Normalize datasets input
         if isinstance(datasets, CounterfactualDataset):
             datasets = {datasets.id: datasets}
-
-        # Use "attribution" as default target variable label if none provided
-        if target_variables_list is None:
-            target_variables_list = [["attribution"]]
 
         # Initialize results structure (compatible with perform_interventions format)
         results = {
@@ -327,19 +330,13 @@ class InterventionExperiment:
             # Returns: List[List[Dict]] where data[0][unit_idx] contains each unit's attribution
             attribution_data = _run_attribution_patching(
                 pipeline=self.pipeline,
+                metric_fn=metric_fn,
                 counterfactual_dataset=datasets[dataset_name],
                 model_units_list=all_units_batched,
+                get_correct_token_fn=get_correct_token_fn,
                 verbose=verbose,
                 batch_size=self.config["batch_size"]
             )
-
-            # Extract all scores at once as a tensor/list (more efficient than per-unit .item() calls)
-            all_scores = [
-                attribution_data[0][idx]["attribution_score"].item()
-                if isinstance(attribution_data[0][idx]["attribution_score"], torch.Tensor)
-                else attribution_data[0][idx]["attribution_score"]
-                for idx in range(len(self.model_units_lists))
-            ]
 
             # Now unpack results back to individual model_units_lists
             for idx, model_units_list in enumerate(self.model_units_lists):
@@ -358,25 +355,24 @@ class InterventionExperiment:
                         indices = model_unit.get_feature_indices()
                         feature_indices[unit_key] = indices
 
-                # Store results for this model_units_list
-                # Note: We don't store attribution_data (contains tensors) to avoid deepcopy issues
+                # Store results for this model_units_list with attribution data
                 results["dataset"][dataset_name]["model_unit"][str(model_units_list)] = {
                     "metadata": metadata,
-                    "feature_indices": feature_indices
+                    "feature_indices": feature_indices,
+                    "attribution_data": unit_attribution_data  # Store for compute_attribution_scores
                 }
 
-                # Format attribution scores for each target variable label
-                # Use the pre-extracted score (already converted to float)
-                for target_variables in target_variables_list:
-                    target_variable_str = "-".join(target_variables)
-
-                    # Store in format compatible with perform_interventions
-                    results["dataset"][dataset_name]["model_unit"][str(model_units_list)][target_variable_str] = {
-                        "average_score": all_scores[idx],
-                        "attribution_scores": [all_scores[idx]]
-                    }
-
         progress_bar.close()
+
+        # Compute scores for each target variable using checker
+        from causal.causal_utils import compute_attribution_scores
+        results = compute_attribution_scores(
+            results,
+            self.causal_model,
+            datasets,
+            target_variables_list,
+            self.checker
+        )
 
         # Save results if directory provided
         if save_dir is not None:
