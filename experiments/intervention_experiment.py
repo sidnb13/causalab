@@ -265,7 +265,7 @@ class InterventionExperiment:
 
         return results
 
-    def perform_attribution_patching(self, datasets, metric_fn: Callable, get_correct_token_fn: Callable, target_variables_list: List[List[str]], verbose: bool = False, save_dir=None):
+    def perform_attribution_patching(self, datasets, metric_fn: Callable, get_correct_token_fn: Callable, target_variables_list: List[List[str]], get_other_choice_tokens_fn: Callable = None, verbose: bool = False, save_dir=None):
         """
         Perform attribution patching to approximate intervention effects using gradients.
 
@@ -286,9 +286,10 @@ class InterventionExperiment:
         Args:
             datasets: Dictionary mapping dataset names to CounterfactualDataset objects,
                      or a single CounterfactualDataset
-            metric_fn: Function to compute loss (receives logits and correct_token_ids)
+            metric_fn: Function to compute loss (receives logits, correct_token_ids, other_choice_ids)
             get_correct_token_fn: Function to extract correct answer token string from input dict
             target_variables_list: List of causal variable groups to evaluate (e.g., [["answer"], ["answer_position"]])
+            get_other_choice_tokens_fn: Function to extract other choice token strings from input dict (returns list of strings)
             verbose: Whether to show progress bars during execution
             save_dir: Directory to save results (if provided)
 
@@ -334,6 +335,7 @@ class InterventionExperiment:
                 counterfactual_dataset=datasets[dataset_name],
                 model_units_list=all_units_batched,
                 get_correct_token_fn=get_correct_token_fn,
+                get_other_choice_tokens_fn=get_other_choice_tokens_fn,
                 verbose=verbose,
                 batch_size=self.config["batch_size"]
             )

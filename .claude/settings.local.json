@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(.venv/bin/pytest tests/integration/test_attribution_patching_basic.py -v -s)",
+      "Bash(.venv/bin/pytest:*)",
+      "Bash(uv run:*)",
+      "Bash(git checkout:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

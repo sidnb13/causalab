@@ -467,6 +467,7 @@ def _run_attribution_patching(
     counterfactual_dataset: CounterfactualDataset,
     model_units_list: List[List[AtomicModelUnit]],
     get_correct_token_fn: Callable,
+    get_other_choice_tokens_fn: Callable = None,
     verbose: bool = False,
     batch_size=32,
 ) -> List[List[Dict[str, torch.Tensor]]]:
@@ -483,10 +484,11 @@ def _run_attribution_patching(
 
     Args:
         pipeline: The language model pipeline
-        metric_fn: Function to compute loss (receives logits and correct_token_ids)
+        metric_fn: Function to compute loss (receives logits, correct_token_ids, other_choice_ids)
         counterfactual_dataset: Dataset with base and counterfactual inputs
         model_units_list: Model units to compute attributions for
         get_correct_token_fn: Function to extract correct answer token string from an input dict
+        get_other_choice_tokens_fn: Function to extract other choice token strings from an input dict (returns list of strings)
         verbose: Whether to show progress bars
         batch_size: Batch size for processing
 
@@ -510,7 +512,7 @@ def _run_attribution_patching(
 
     # Initialize container for collected features: one list per model unit group
     data = [
-        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "inputs": [], "logits": [], "correct_token_ids": []} for _ in range(len(model_units))]
+        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "sum_other_logits": [], "inputs": [], "logits": [], "correct_token_ids": [], "other_choice_token_ids": []} for _ in range(len(model_units))]
         for model_units in model_units_list
     ]
 
@@ -585,8 +587,21 @@ def _run_attribution_patching(
             ]
             correct_token_ids = torch.tensor(correct_token_ids, device=logits.device)
 
+            # Extract other choice tokens if function provided
+            other_choice_token_ids = None
+            if get_other_choice_tokens_fn is not None:
+                # get_other_choice_tokens_fn returns list of token strings for each item
+                other_choice_token_lists = [get_other_choice_tokens_fn(item) for item in batch['input']]
+                # Convert to token IDs: [[id1, id2], [id1, id2], ...]
+                other_choice_token_ids = [
+                    [pipeline.tokenizer.encode(token, add_special_tokens=False)[0] for token in tokens]
+                    for tokens in other_choice_token_lists
+                ]
+                other_choice_token_ids = torch.tensor(other_choice_token_ids, device=logits.device)
+
             # Compute metric scores for each example (for later evaluation)
-            metric_scores = metric_fn(logits, correct_token_ids)
+            # metric_fn now returns (metric_scores, sum_other_logits)
+            metric_scores, sum_other_logits = metric_fn(logits, correct_token_ids, other_choice_token_ids)
 
             loss = metric_scores.mean()
             loss.backward()
@@ -600,9 +615,13 @@ def _run_attribution_patching(
                 for j in range(len(model_units_list[i])):
                     data[i][j]["inputs"].extend(batch['input'])
                     data[i][j]["metric_scores"].extend(metric_scores.detach().cpu().tolist())
+                    data[i][j]["sum_other_logits"].extend(sum_other_logits.detach().cpu().tolist())
                     # Store per-example logits and correct token IDs for checker
                     data[i][j]["logits"].extend(last_logits)
                     data[i][j]["correct_token_ids"].extend(correct_token_ids.cpu())
+                    # Store other choice token IDs if available
+                    if other_choice_token_ids is not None:
+                        data[i][j]["other_choice_token_ids"].extend(other_choice_token_ids.cpu())
 
             # populate container with base and cf activations
             process_activations(
@@ -634,8 +653,10 @@ def _run_attribution_patching(
                 "grad": torch.stack(datum["grad"]),
                 "inputs": datum["inputs"],  # Preserve inputs
                 "metric_scores": datum["metric_scores"],  # Preserve metric_scores
+                "sum_other_logits": datum["sum_other_logits"],  # Preserve sum of other choice logits
                 "logits": datum["logits"],  # Preserve logits for checker
                 "correct_token_ids": datum["correct_token_ids"],  # Preserve correct token IDs for checker
+                "other_choice_token_ids": datum["other_choice_token_ids"],  # Preserve other choice token IDs for checker
             }
             for datum in x
         ]
@@ -654,11 +675,13 @@ def _run_attribution_patching(
             # Store aggregated attribution score (mean across samples)
             data[i][j]["attribution_score"] = torch.abs(raw_score_per_sample.mean(dim=0))
 
-            # Compute per-example approximation: gradient term + base metric score
-            # This approximates the counterfactual metric via Taylor expansion:
-            # metric(counterfactual) ≈ metric(base) + grad · (h_cf - h_base)
+            # Compute per-example approximation of logit[correct] after intervention:
+            # approx ≈ logit_base[correct] + grad · (h_cf - h_base)
+            # where: metric_base = logit_base[correct] - sum(logit_base[other_choices])
+            # So: approx = metric_base + grad·Δh + sum(logit_base[other_choices])
             metric_scores_tensor = torch.tensor(data[i][j]["metric_scores"])
-            data[i][j]["approx"] = raw_score_per_sample + metric_scores_tensor
+            sum_other_logits_tensor = torch.tensor(data[i][j]["sum_other_logits"])
+            data[i][j]["approx"] = raw_score_per_sample + metric_scores_tensor + sum_other_logits_tensor
 
     # Clean up the intervenable model to free GPU memory
     _delete_intervenable_model(intervenable_model)

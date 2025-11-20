@@ -79,51 +79,69 @@ class CheapArgmaxChecker(Checker):
 
     @staticmethod
     def compute_score(
-        logits: torch.Tensor, correct: torch.Tensor
-    ) -> torch.Tensor:
-        return (logits.gather(-1, correct.unsqueeze(-1)) - logits.detach()).sum()
-
-    def check_attribution(self, attribution_score, **kwargs) -> float:
+        logits: torch.Tensor, correct: torch.Tensor, other_choices: torch.Tensor
+    ):
         """
-        Check if some attribution score indicates correct prediction.
-        note that attribution score != metric_score,
-        metric score is part of the attribution score
+        Compute difference between correct choice logit and other choice logits.
 
         Args:
-            attribution_score: Pre-computed cheap_argmax score (scalar or tensor)
-            **kwargs: Must contain:
-                - correct: correct token index (int or Tensor)
-                - logits: logits tensor (1D for single example or 2D for batch)
+            logits: Logits tensor, shape [vocab_size] or [batch_size, vocab_size]
+            correct: Correct token index, shape [] or [batch_size]
+            other_choices: Other choice token indices, shape [n_choices] or [batch_size, n_choices]
 
         Returns:
-            1.0 if correct, 0.0 otherwise (or tensor of scores for batched inputs)
+            tuple: (metric, sum_other_logits) where
+                - metric = logits[correct] - sum(logits[other_choices])
+                - sum_other_logits = sum(logits[other_choices])
         """
-
-        correct_index = kwargs["correct"]  # int or tensor [batch_size]
-        logits = kwargs["logits"]  # [V] or [batch_size, V]
-
-        # Handle both batched and unbatched inputs
         is_batched = logits.dim() == 2
 
         if is_batched:
-            # Batched processing
-            # attribution_score: [batch_size]
-            # correct_index: [batch_size]
-            # logits: [batch_size, V]
-            logits = logits.clone()  # Don't modify the original
-            batch_size = logits.shape[0]
+            # logits: [batch_size, vocab_size]
+            # correct: [batch_size]
+            # other_choices: [batch_size, n_choices]
+            correct_logits = logits.gather(-1, correct.unsqueeze(-1)).squeeze(-1)  # [batch_size]
 
-            # Replace the correct token's logit with the attribution score for each example
-            logits[torch.arange(batch_size, device=logits.device), correct_index] = attribution_score
+            # Gather all other choice logits: [batch_size, n_choices]
+            other_logits = logits.gather(-1, other_choices)
+            sum_other_logits = other_logits.sum(dim=-1)  # [batch_size]
 
-            # Check if the correct token has highest logit for each example
-            predictions = torch.argmax(logits, dim=-1)
-            return (predictions == correct_index).float()
+            # Return metric and sum of other logits
+            return correct_logits - sum_other_logits, sum_other_logits
         else:
-            # Single example processing (backward compatibility)
-            logits = logits.clone()  # Don't modify the original
-            logits[correct_index] = attribution_score
-            return float(torch.argmax(logits) == correct_index)
+            # logits: [vocab_size]
+            # correct: scalar
+            # other_choices: [n_choices]
+            correct_logit = logits[correct]  # scalar
+            other_logits = logits[other_choices]  # [n_choices]
+            sum_other_logits = other_logits.sum()  # scalar
+
+            return correct_logit - sum_other_logits, sum_other_logits
+
+    def check_attribution(self, attribution_score, **kwargs) -> float:
+        """
+        Check if attribution score indicates correct prediction.
+
+        The attribution_score (approx) approximates: logit_cf[correct]
+        We compare against sum_other_logits_base to check if correct wins.
+
+        Args:
+            attribution_score: Approximated correct logit (scalar or tensor)
+            **kwargs: Must contain 'sum_other_logits' - sum of base other choice logits
+
+        Returns:
+            1.0 if correct (approx > sum_other_logits), 0.0 otherwise
+        """
+        sum_other_logits = kwargs.get("sum_other_logits")
+        if sum_other_logits is None:
+            raise ValueError("check_attribution requires 'sum_other_logits' in kwargs")
+
+        is_batched = isinstance(attribution_score, torch.Tensor) and attribution_score.dim() > 0
+
+        if is_batched:
+            return (attribution_score > sum_other_logits).float()
+        else:
+            return float(attribution_score > sum_other_logits)
 
 
 def can_distinguish_with_dataset(
@@ -304,8 +322,10 @@ def compute_attribution_scores(
             unit_data = attribution_data[0][0]
             inputs = unit_data.get("inputs", [])
             approx_scores = unit_data.get("approx", None)
+            sum_other_logits = unit_data.get("sum_other_logits", [])
             logits = unit_data.get("logits", [])
             correct_token_ids = unit_data.get("correct_token_ids", [])
+            other_choice_token_ids = unit_data.get("other_choice_token_ids", [])
 
             # Fall back to metric_scores if approx not available (backward compatibility)
             if approx_scores is None:
@@ -341,15 +361,13 @@ def compute_attribution_scores(
                 # Compute correctness scores using checker
                 scores = []
                 for idx, approx_score in enumerate(approx_scores):
-                    # Prepare kwargs for checker
-                    checker_kwargs = {"is_intervention": False}
-
-                    # Add logits and correct token IDs if available (for CheapArgmaxChecker)
-                    if len(logits) > 0 and len(correct_token_ids) > 0:
-                        checker_kwargs["logits"] = logits[idx]
-                        checker_kwargs["correct"] = correct_token_ids[idx]
-
-                    score = checker(approx_score, **checker_kwargs)
+                    # For CheapArgmaxChecker, we pass the approx score and sum_other_logits
+                    # The checker will evaluate: is approx > sum_other_logits?
+                    score = checker(
+                        approx_score,
+                        is_intervention=False,
+                        sum_other_logits=sum_other_logits[idx] if sum_other_logits else None
+                    )
                     scores.append(score)
 
                 # Store processed results

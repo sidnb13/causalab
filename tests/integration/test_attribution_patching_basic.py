@@ -58,21 +58,46 @@ class TestAttributionPatchingBasic:
             pos = get_answer_position(item['object_color'], item['choice0'], item['choice1'])
             return get_answer(pos, item['symbol0'], item['symbol1'])
 
-        # Define metric function for batched inputs
-        def metric_fn(logits, correct_token_ids):
+        # Define function to get other choice tokens
+        def get_other_choice_tokens(item):
+            """Return the token that is NOT the correct answer."""
+            pos = get_answer_position(item['object_color'], item['choice0'], item['choice1'])
+            correct = get_answer(pos, item['symbol0'], item['symbol1'])
+            # Return the other choice
+            if correct == item['symbol0']:
+                return [item['symbol1']]
+            else:
+                return [item['symbol0']]
+
+        # Define metric function for batched inputs (FIXED: now accepts other_choice_token_ids)
+        def metric_fn(logits, correct_token_ids, other_choice_token_ids):
             # logits: (batch_size, seq_len, vocab_size)
             # correct_token_ids: (batch_size,)
+            # other_choice_token_ids: (batch_size, n_choices)
             last_logits = logits[:, -1, :]  # Get logits for last token
-            return torch.stack([
-                CheapArgmaxChecker.compute_score(last_logits[i], correct_token_ids[i])
-                for i in range(len(correct_token_ids))
-            ])
 
-        # Run attribution patching
+            # compute_score now returns (metric, sum_other_logits)
+            results = [
+                CheapArgmaxChecker.compute_score(
+                    last_logits[i],
+                    correct_token_ids[i],
+                    other_choice_token_ids[i]
+                )
+                for i in range(len(correct_token_ids))
+            ]
+
+            # Unpack metrics and sum_other_logits
+            metrics = torch.stack([r[0] for r in results])
+            sum_other_logits = torch.stack([r[1] for r in results])
+
+            return metrics, sum_other_logits
+
+        # Run attribution patching (FIXED: pass get_other_choice_tokens_fn)
         results = experiment.perform_attribution_patching(
             datasets,
             metric_fn=metric_fn,
             get_correct_token_fn=get_correct_token,
+            get_other_choice_tokens_fn=get_other_choice_tokens,
             target_variables_list=[["answer"]],
             verbose=True
         )
