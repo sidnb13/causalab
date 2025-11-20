@@ -510,7 +510,7 @@ def _run_attribution_patching(
 
     # Initialize container for collected features: one list per model unit group
     data = [
-        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "inputs": []} for _ in range(len(model_units))]
+        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "inputs": [], "logits": [], "correct_token_ids": []} for _ in range(len(model_units))]
         for model_units in model_units_list
     ]
 
@@ -591,11 +591,18 @@ def _run_attribution_patching(
             loss = metric_scores.mean()
             loss.backward()
 
-            # Store inputs and metric scores for each model unit
+            # Extract last token logits for checker (same shape as metric computation)
+            # logits: (batch_size, seq_len, vocab_size)
+            last_logits = logits[:, -1, :].detach().cpu()  # [batch_size, vocab_size]
+
+            # Store inputs, metric scores, logits, and correct tokens for each model unit
             for i in range(len(model_units_list)):
                 for j in range(len(model_units_list[i])):
                     data[i][j]["inputs"].extend(batch['input'])
                     data[i][j]["metric_scores"].extend(metric_scores.detach().cpu().tolist())
+                    # Store per-example logits and correct token IDs for checker
+                    data[i][j]["logits"].extend(last_logits)
+                    data[i][j]["correct_token_ids"].extend(correct_token_ids.cpu())
 
             # populate container with base and cf activations
             process_activations(
@@ -627,6 +634,8 @@ def _run_attribution_patching(
                 "grad": torch.stack(datum["grad"]),
                 "inputs": datum["inputs"],  # Preserve inputs
                 "metric_scores": datum["metric_scores"],  # Preserve metric_scores
+                "logits": datum["logits"],  # Preserve logits for checker
+                "correct_token_ids": datum["correct_token_ids"],  # Preserve correct token IDs for checker
             }
             for datum in x
         ]
@@ -636,10 +645,20 @@ def _run_attribution_patching(
     # attribution score computation (use absolute value for magnitude of effect)
     for i in range(len(data)):
         for j in range(len(data[i])):
-            raw_score = torch.abs(torch.sum(
+            # Compute raw attribution score (gradient * activation difference)
+            # Shape: (n_samples,) after summing over features
+            raw_score_per_sample = torch.sum(
                 data[i][j]["grad"] * (data[i][j]["cf"] - data[i][j]["base"]), dim=-1
-            ).mean(dim=0))
-            data[i][j]["attribution_score"] = raw_score
+            )
+
+            # Store aggregated attribution score (mean across samples)
+            data[i][j]["attribution_score"] = torch.abs(raw_score_per_sample.mean(dim=0))
+
+            # Compute per-example approximation: gradient term + base metric score
+            # This approximates the counterfactual metric via Taylor expansion:
+            # metric(counterfactual) ≈ metric(base) + grad · (h_cf - h_base)
+            metric_scores_tensor = torch.tensor(data[i][j]["metric_scores"])
+            data[i][j]["approx"] = raw_score_per_sample + metric_scores_tensor
 
     # Clean up the intervenable model to free GPU memory
     _delete_intervenable_model(intervenable_model)

@@ -1,16 +1,18 @@
 """Utility functions for working with causal models."""
 
-from causal.counterfactual_dataset import CounterfactualDataset
-from typing import List, Dict, Callable, Union
 import copy
+from typing import Callable, Dict, List, Union
+
 import numpy as np
 import torch
+
+from causal.counterfactual_dataset import CounterfactualDataset
 
 
 class Checker:
     """Base class for checking if intervention/attribution output is correct."""
 
-    def __call__(self, output_or_score, expected_label=None, is_intervention: bool = True) -> float:
+    def __call__(self, output_or_score, expected_label=None, is_intervention: bool = True, **kwargs) -> float:
         """
         Check correctness based on method type.
 
@@ -19,6 +21,7 @@ class Checker:
                            For attribution: metric score (e.g., from cheap_argmax)
             expected_label: Expected output from causal model (only used for interventions)
             is_intervention: True for regular interventions, False for attribution patching
+            **kwargs: Additional arguments passed to check_intervention or check_attribution
 
         Returns:
             Score (typically 0 or 1) indicating correctness
@@ -26,7 +29,7 @@ class Checker:
         if is_intervention:
             return self.check_intervention(output_or_score, expected_label)
         else:
-            return self.check_attribution(output_or_score)
+            return self.check_attribution(output_or_score, **kwargs)
 
     def check_intervention(self, output_dict, expected_label) -> float:
         """Check if regular intervention output matches expected label."""
@@ -75,34 +78,52 @@ class CheapArgmaxChecker(Checker):
         raise NotImplementedError("CheapArgmaxChecker only supports attribution patching")
 
     @staticmethod
-    def compute_attribution(logits: torch.Tensor, correct_token_id: int) -> torch.Tensor:
+    def compute_score(
+        logits: torch.Tensor, correct: torch.Tensor
+    ) -> torch.Tensor:
+        return (logits.gather(-1, correct.unsqueeze(-1)) - logits.detach()).sum()
+
+    def check_attribution(self, attribution_score, **kwargs) -> float:
         """
-        Compute attribution score (margin between correct and next best token).
+        Check if some attribution score indicates correct prediction.
+        note that attribution score != metric_score,
+        metric score is part of the attribution score
 
         Args:
-            logits: Logits for the last token prediction (shape: vocab_size)
-            correct_token_id: Token ID of the correct answer
+            attribution_score: Pre-computed cheap_argmax score (scalar or tensor)
+            **kwargs: Must contain:
+                - correct: correct token index (int or Tensor)
+                - logits: logits tensor (1D for single example or 2D for batch)
 
         Returns:
-            Score representing margin (positive if correct token is most likely)
+            1.0 if correct, 0.0 otherwise (or tensor of scores for batched inputs)
         """
-        next_best = torch.topk(logits, k=2, dim=-1).indices[..., 1]
-        return logits[..., correct_token_id] - logits[..., next_best].detach()
 
-    def check_attribution(self, metric_score) -> float:
-        """
-        Check if metric score indicates correct prediction.
+        correct_index = kwargs["correct"]  # int or tensor [batch_size]
+        logits = kwargs["logits"]  # [V] or [batch_size, V]
 
-        Args:
-            metric_score: Pre-computed cheap_argmax score
+        # Handle both batched and unbatched inputs
+        is_batched = logits.dim() == 2
 
-        Returns:
-            1.0 if score > 0 (correct token most likely), 0.0 otherwise
-        """
-        if isinstance(metric_score, torch.Tensor):
-            metric_score = metric_score.item()
+        if is_batched:
+            # Batched processing
+            # attribution_score: [batch_size]
+            # correct_index: [batch_size]
+            # logits: [batch_size, V]
+            logits = logits.clone()  # Don't modify the original
+            batch_size = logits.shape[0]
 
-        return 1.0 if metric_score > 0 else 0.0
+            # Replace the correct token's logit with the attribution score for each example
+            logits[torch.arange(batch_size, device=logits.device), correct_index] = attribution_score
+
+            # Check if the correct token has highest logit for each example
+            predictions = torch.argmax(logits, dim=-1)
+            return (predictions == correct_index).float()
+        else:
+            # Single example processing (backward compatibility)
+            logits = logits.clone()  # Don't modify the original
+            logits[correct_index] = attribution_score
+            return float(torch.argmax(logits) == correct_index)
 
 
 def can_distinguish_with_dataset(
@@ -279,12 +300,25 @@ def compute_attribution_scores(
             if attribution_data is None or len(attribution_data) == 0:
                 continue
 
-            # Get the first unit's data (they all have the same inputs/metric_scores)
+            # Get the first unit's data (they all have the same inputs/approx scores)
             unit_data = attribution_data[0][0]
             inputs = unit_data.get("inputs", [])
-            metric_scores = unit_data.get("metric_scores", [])
+            approx_scores = unit_data.get("approx", None)
+            logits = unit_data.get("logits", [])
+            correct_token_ids = unit_data.get("correct_token_ids", [])
 
-            if not inputs or not metric_scores:
+            # Fall back to metric_scores if approx not available (backward compatibility)
+            if approx_scores is None:
+                approx_scores = unit_data.get("metric_scores", [])
+
+            if not inputs:
+                continue
+
+            # Convert approx to list if it's a tensor
+            if isinstance(approx_scores, torch.Tensor):
+                approx_scores = approx_scores.cpu().tolist()
+
+            if not approx_scores:
                 continue
 
             # Evaluate for each target variable
@@ -300,14 +334,22 @@ def compute_attribution_scores(
                 assert len(labeled_data) == len(inputs), (
                     f"Length mismatch: {len(labeled_data)} vs {len(inputs)}"
                 )
-                assert len(labeled_data) == len(metric_scores), (
-                    f"Length mismatch: {len(labeled_data)} vs {len(metric_scores)}"
+                assert len(labeled_data) == len(approx_scores), (
+                    f"Length mismatch: {len(labeled_data)} vs {len(approx_scores)}"
                 )
 
                 # Compute correctness scores using checker
                 scores = []
-                for metric_score in metric_scores:
-                    score = checker(metric_score, is_intervention=False)
+                for idx, approx_score in enumerate(approx_scores):
+                    # Prepare kwargs for checker
+                    checker_kwargs = {"is_intervention": False}
+
+                    # Add logits and correct token IDs if available (for CheapArgmaxChecker)
+                    if len(logits) > 0 and len(correct_token_ids) > 0:
+                        checker_kwargs["logits"] = logits[idx]
+                        checker_kwargs["correct"] = correct_token_ids[idx]
+
+                    score = checker(approx_score, **checker_kwargs)
                     scores.append(score)
 
                 # Store processed results

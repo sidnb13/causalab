@@ -13,7 +13,6 @@ dependencies = [
     "matplotlib",
     "pandas",
     "numpy",
-    "pyvene @ file:///Users/sidbaskaran/Desktop/research/causalab/pyvene",
     "scikit-learn",
     "ipywidgets",
     "jupyterlab",

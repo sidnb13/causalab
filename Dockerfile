@@ -35,9 +35,13 @@ RUN chmod +x /usr/local/bin/ray-init.sh /usr/local/bin/entrypoint.sh
 # Copy only dependency files
 COPY pyproject.toml uv.lock* ./
 
+# Copy pyvene submodule
+COPY pyvene/ ./pyvene/
+
 # Install everything to system Python
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -e ".[${DEPENDENCY_TAGS}]" && \
+    uv pip install --system -e ./pyvene --no-deps && \
     uv pip install --system ipdb
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -177,7 +177,7 @@ def metric_fn(logits, correct_token_ids):
     last_logits = logits[:, -1, :]  # Get logits for last token
     return torch.stack(
         [
-            CheapArgmaxChecker.compute_attribution(last_logits[i], correct_token_ids[i])
+            CheapArgmaxChecker.compute_score(last_logits[i], correct_token_ids[i])
             for i in range(len(correct_token_ids))
         ]
     )
