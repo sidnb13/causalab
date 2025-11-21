@@ -6,6 +6,7 @@ of intervention results across different experiment types (residual stream, atte
 """
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
@@ -121,7 +122,9 @@ def create_heatmap(
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
 
-    plt.show()
+    # Only show if in interactive environment to avoid non-interactive backend warnings
+    if matplotlib.get_backend().lower() != 'agg':
+        plt.show()
 
 
 def create_binary_mask_heatmap(
@@ -193,7 +196,9 @@ def create_binary_mask_heatmap(
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
 
-    plt.show()
+    # Only show if in interactive environment to avoid non-interactive backend warnings
+    if matplotlib.get_backend().lower() != 'agg':
+        plt.show()
     plt.close()
 
 
@@ -381,7 +386,9 @@ def create_text_output_grid(
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, bbox_inches='tight', dpi=150)
 
-    plt.show()
+    # Only show if in interactive environment to avoid non-interactive backend warnings
+    if matplotlib.get_backend().lower() != 'agg':
+        plt.show()
 
 
 def print_text_heatmap(
