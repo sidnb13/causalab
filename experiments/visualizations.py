@@ -5,14 +5,15 @@ This module provides unified visualization functions for creating heatmaps and t
 of intervention results across different experiment types (residual stream, attention heads, etc.).
 """
 
-import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import seaborn as sns
-from typing import List, Optional, Callable, Dict
-from collections import Counter
 import os
+from collections import Counter
+from typing import Callable, List, Optional
+
+import matplotlib
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 
 
 def create_heatmap(
