@@ -125,6 +125,9 @@ def sample_answerable_question():
     if input_sample["object_color"][1] not in [input_sample["choice" + str(x)] for x in range(NUM_CHOICES)]:
         index = random.randint(0, NUM_CHOICES - 1)
         input_sample["choice" + str(index)] = input_sample["object_color"][1]
+    # Delete raw_input to force regeneration from current symbols/choices
+    if "raw_input" in input_sample:
+        del input_sample["raw_input"]
     input_sample["raw_input"] = positional_causal_model.run_forward(input_sample)["raw_input"]
     return input_sample
 
@@ -145,6 +148,9 @@ def same_symbol_different_position():
     counterfactual["symbol" + str(pos)] = input_sample["symbol" + str(new_pos)]
     counterfactual["symbol" + str(new_pos)] = input_sample["symbol" + str(pos)]
 
+    # Delete raw_input to force regeneration from current symbols/choices
+    if "raw_input" in input_sample:
+        del input_sample["raw_input"]
     input_sample["raw_input"] = positional_causal_model.run_forward(input_sample)["raw_input"]
     counterfactual["raw_input"] = positional_causal_model.run_forward(counterfactual)["raw_input"]
     return {"input": input_sample, "counterfactual_inputs": [counterfactual]}
@@ -166,6 +172,9 @@ def different_symbol():
     for i in range(NUM_CHOICES):
         counterfactual["symbol" + str(i)] = new_symbols[i]
 
+    # Delete raw_input to force regeneration from current symbols/choices
+    if "raw_input" in input_sample:
+        del input_sample["raw_input"]
     input_sample["raw_input"] = positional_causal_model.run_forward(input_sample)["raw_input"]
     counterfactual["raw_input"] = positional_causal_model.run_forward(counterfactual)["raw_input"]
     return {"input": input_sample, "counterfactual_inputs": [counterfactual]}
@@ -177,6 +186,11 @@ def random_counterfactual():
     """
     input_sample = sample_answerable_question()
     counterfactual = sample_answerable_question()
+    # Delete raw_input to force regeneration from current symbols/choices
+    if "raw_input" in input_sample:
+        del input_sample["raw_input"]
+    if "raw_input" in counterfactual:
+        del counterfactual["raw_input"]
     input_sample["raw_input"] = positional_causal_model.run_forward(input_sample)["raw_input"]
     counterfactual["raw_input"] = positional_causal_model.run_forward(counterfactual)["raw_input"]
     return {"input": input_sample, "counterfactual_inputs": [counterfactual]}
@@ -195,21 +209,17 @@ def get_symbol_index(input_sample, pipeline, index):
     Returns:
         list[int]: List containing the index of the correct answer symbol token
     """
-    target_symbol = input_sample[f"symbol{index}"]
     prompt = input_sample["raw_input"]
 
     # Find all single uppercase letters in the prompt
     matches = list(re.finditer(r"\b[A-Z]\b", prompt))
 
-    # Find the match corresponding to our target symbol
-    symbol_match = None
-    for match in matches:
-        if prompt[match.start():match.end()] == target_symbol:
-            symbol_match = match
-            break
+    # Use position-based indexing instead of dictionary lookup
+    # During interventions, input_sample dict may not match the prompt
+    if index >= len(matches):
+        raise ValueError(f"Symbol index {index} out of range in prompt: {prompt}")
 
-    if not symbol_match:
-        raise ValueError(f"Could not find symbol {target_symbol} in prompt: {prompt}")
+    symbol_match = matches[index]
 
     # Step 1: Load FULL prompt WITH padding (as normal)
     tokenized_prompt_padded = list(pipeline.load(prompt)["input_ids"][0])
@@ -252,7 +262,7 @@ def get_symbol_index(input_sample, pipeline, index):
 def create_symbol_token_position(pipeline, index):
     """Create a TokenPosition for the correct answer symbol."""
     return TokenPosition(
-        lambda x: get_symbol_index(x, pipeline, index),
+        lambda x, **kwargs: get_symbol_index(x, pipeline, index),
         pipeline,
         id=f"symbol{index}"
     )
@@ -261,41 +271,61 @@ def create_symbol_token_position(pipeline, index):
 def create_symbol_period_token_position(pipeline, index):
     """Create a TokenPosition for the period after the correct answer symbol."""
     return TokenPosition(
-        lambda x: [get_symbol_index(x, pipeline, index)[0] + 1],
+        lambda x, **kwargs: [get_symbol_index(x, pipeline, index)[0] + 1],
         pipeline,
         id=f"symbol{index}_period"
     )
 
 def get_correct_symbol_index(input_sample, pipeline):
     """
-    Find the index of the correct answer symbol in the prompt.
+    Find the index of the correct answer symbol in the prompt by parsing it.
 
     Args:
         input_sample (Dict): The input dictionary to a causal model
         pipeline: The tokenizer pipeline
-        causal_model: The causal model
 
     Returns:
         list[int]: List containing the index of the correct answer symbol token
     """
-    # Run the model to get the answer position
-    output = positional_causal_model.run_forward(input_sample)
-    pos = output["answer_position"]
-    correct_symbol = output[f"symbol{pos}"]
     prompt = input_sample["raw_input"]
 
-    # Find all single uppercase letters in the prompt
-    matches = list(re.finditer(r"\b[A-Z]\b", prompt))
+    # Parse correct answer from prompt: "The X is Y. What color..."
+    first_sentence = prompt.split('.')[0]
+    parts = first_sentence.split(' is ')
+    if len(parts) != 2:
+        raise ValueError(f"Could not parse color from prompt: {prompt}")
 
-    # Find the match corresponding to our correct symbol
+    correct_color = parts[1].strip()
+
+    # Find all symbols and their choices
+    symbol_matches = list(re.finditer(r"\b[A-Z]\b", prompt))
+    choice_pattern = r"\b([A-Z])\.\s+(\w+)"
+    choice_matches = list(re.finditer(choice_pattern, prompt))
+
+    # Find which symbol has the correct color
+    correct_symbol = None
+    for match in choice_matches:
+        symbol = match.group(1)
+        choice = match.group(2)
+        if choice == correct_color:
+            correct_symbol = symbol
+            break
+
+    if not correct_symbol:
+        # Correct answer not in choices (counterfactual) - use first symbol
+        correct_symbol = prompt[symbol_matches[0].start():symbol_matches[0].end()] if symbol_matches else None
+        if not correct_symbol:
+            raise ValueError(f"No symbols found in prompt: {prompt}")
+
+    # Find position of correct symbol
     symbol_match = None
-    for match in matches:
+    for match in symbol_matches:
         if prompt[match.start():match.end()] == correct_symbol:
             symbol_match = match
             break
 
     if not symbol_match:
-        raise ValueError(f"Could not find correct symbol {correct_symbol} in prompt: {prompt}")
+        raise ValueError(f"Could not find symbol {correct_symbol} in prompt: {prompt}")
 
     # Step 1: Load FULL prompt WITH padding (as normal)
     tokenized_prompt_padded = list(pipeline.load(prompt)["input_ids"][0])
@@ -338,7 +368,7 @@ def get_correct_symbol_index(input_sample, pipeline):
 def create_correct_symbol_token_position(pipeline):
     """Create a TokenPosition for the correct answer symbol."""
     return TokenPosition(
-        lambda x: get_correct_symbol_index(x, pipeline),
+        lambda x, **kwargs: get_correct_symbol_index(x, pipeline),
         pipeline,
         id="correct_symbol"
     )
@@ -347,7 +377,7 @@ def create_correct_symbol_token_position(pipeline):
 def create_correct_symbol_period_token_position(pipeline):
     """Create a TokenPosition for the period after the correct answer symbol."""
     return TokenPosition(
-        lambda x: [get_correct_symbol_index(x, pipeline)[0] + 1],
+        lambda x, **kwargs: [get_correct_symbol_index(x, pipeline)[0] + 1],
         pipeline,
         id="correct_symbol_period"
     )
@@ -356,7 +386,7 @@ def create_correct_symbol_period_token_position(pipeline):
 def create_last_token_position(pipeline):
     """Create a TokenPosition for the last token in the input."""
     return TokenPosition(
-        lambda x: get_last_token_index(x, pipeline),
+        lambda x, **kwargs: get_last_token_index(x, pipeline),
         pipeline,
         id="last_token"
     )

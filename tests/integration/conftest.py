@@ -3,25 +3,46 @@
 import pytest
 import torch
 from neural.pipeline import LMPipeline
-from tasks.MCQA.mcqa import MCQA_task
 from causal.counterfactual_dataset import CounterfactualDataset
+from tasks.MCQA.causal_models import positional_causal_model
+from tasks.MCQA.counterfactuals import different_symbol, same_symbol_different_position, random_counterfactual
+from tasks.MCQA.token_positions import create_correct_symbol_token_position
 
 
 @pytest.fixture(scope="module")
 def device():
-    """Get device for testing."""
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    """Get device for testing.
+
+    Priority: CUDA > MPS > CPU
+    - CUDA: NVIDIA GPUs
+    - MPS: Apple Silicon (M1/M2/M3) GPUs
+    - CPU: Fallback
+    """
+    if torch.cuda.is_available():
+        device_name = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device_name = "mps"
+    else:
+        device_name = "cpu"
+    
+    # Print device selection for visibility
+    print(f"\n[TEST SETUP] Using device: {device_name}")
+    return device_name
 
 
 @pytest.fixture(scope="module")
 def pipeline(device):
     """Load Qwen model pipeline (shared across module for efficiency)."""
     model_name = "Qwen/Qwen2.5-0.5B"
+
+    # Use float32 on MPS for numerical stability, float16 elsewhere for speed
+    dtype = torch.float32 if device == "mps" else torch.float16
+
     pipeline = LMPipeline(
         model_name,
         max_new_tokens=1,
         device=device,
-        dtype=torch.float16,
+        dtype=dtype,
         max_length=32
     )
     pipeline.tokenizer.padding_side = "left"
@@ -31,7 +52,7 @@ def pipeline(device):
 @pytest.fixture(scope="module")
 def causal_model():
     """Load MCQA positional causal model."""
-    return MCQA_task.causal_models["positional"]
+    return positional_causal_model
 
 
 @pytest.fixture
@@ -50,7 +71,7 @@ def small_different_symbol_dataset():
     """Generate small different_symbol counterfactual dataset."""
     return CounterfactualDataset.from_sampler(
         8,
-        MCQA_task.dataset_generators["different_symbol"]
+        different_symbol
     )
 
 
@@ -59,7 +80,7 @@ def small_same_symbol_diff_position_dataset():
     """Generate small same_symbol_different_position counterfactual dataset."""
     return CounterfactualDataset.from_sampler(
         8,
-        MCQA_task.dataset_generators["same_symbol_different_position"]
+        same_symbol_different_position
     )
 
 
@@ -68,5 +89,11 @@ def small_random_dataset():
     """Generate small random counterfactual dataset."""
     return CounterfactualDataset.from_sampler(
         8,
-        MCQA_task.dataset_generators["random_counterfactual"]
+        random_counterfactual
     )
+
+
+@pytest.fixture
+def answer_token_position(pipeline):
+    """Create answer token position for the given pipeline."""
+    return create_correct_symbol_token_position(pipeline)

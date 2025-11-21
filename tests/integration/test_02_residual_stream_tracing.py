@@ -56,16 +56,11 @@ class TestSameLengthResidualStreamTracing:
     def test_create_tracing_experiment(self, pipeline, causal_model, checker):
         """Test creating SameLengthResidualStreamTracing experiment."""
         tracing_exp = SameLengthResidualStreamTracing(
-            pipeline=pipeline,
-            causal_model=causal_model,
-            checker=checker
+            pipeline=pipeline
         )
 
         assert tracing_exp is not None
         assert tracing_exp.pipeline == pipeline
-        assert tracing_exp.causal_model == causal_model
-        assert tracing_exp.checker == checker
-
     def test_run_tracing_on_valid_pair(self, pipeline, causal_model, checker):
         """Test running tracing experiment on a valid input pair."""
         # Sample original and counterfactual
@@ -85,9 +80,7 @@ class TestSameLengthResidualStreamTracing:
 
         # Create tracing experiment
         tracing_exp = SameLengthResidualStreamTracing(
-            pipeline=pipeline,
-            causal_model=causal_model,
-            checker=checker
+            pipeline=pipeline
         )
 
         # Run tracing
@@ -99,7 +92,6 @@ class TestSameLengthResidualStreamTracing:
         # Verify results structure
         assert results is not None
         assert "dataset" in results
-        assert "task_name" in results
         assert "method_name" in results
         assert "model_name" in results
 
@@ -124,9 +116,7 @@ class TestSameLengthResidualStreamTracing:
 
         # Run tracing
         tracing_exp = SameLengthResidualStreamTracing(
-            pipeline=pipeline,
-            causal_model=causal_model,
-            checker=checker
+            pipeline=pipeline
         )
         results = tracing_exp.run(
             base_input=original,
@@ -166,9 +156,7 @@ class TestSameLengthResidualStreamTracing:
         cf_tokens = pipeline.tokenizer.convert_ids_to_tokens(cf_ids['input_ids'][0])
 
         tracing_exp = SameLengthResidualStreamTracing(
-            pipeline=pipeline,
-            causal_model=causal_model,
-            checker=checker
+            pipeline=pipeline
         )
 
         if len(base_tokens) != len(cf_tokens):

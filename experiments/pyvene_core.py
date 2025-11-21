@@ -8,22 +8,22 @@ on the pyvene library. Key components include model preparation, data handling,
 intervention execution, and training functions.
 """
 
-import gc
 import collections
+import gc
 import logging
-from typing import List, Dict, Union
+from typing import Callable, Dict, List, Literal
 
+import numpy as np
 import torch
+import transformers
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import transformers
-import pyvene as pv
-import numpy as np
 from tqdm import *
 
+import pyvene as pv
 from causal.counterfactual_dataset import CounterfactualDataset
-from neural.pipeline import Pipeline
 from neural.model_units import AtomicModelUnit
+from neural.pipeline import Pipeline
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -122,14 +122,14 @@ def _prepare_intervenable_inputs(pipeline, batch, model_units_list):
 
     #shape: (num_model_units, batch_size, num_component_indices)
     base_indices = [
-        model_unit.index_component(batched_base, batch=True)
-        for model_units in model_units_list 
+        model_unit.index_component(batched_base, batch=True, is_original=True)
+        for model_units in model_units_list
         for model_unit in model_units
     ]
 
     #shape: (num_model_units, batch_size, num_component_indices)
     counterfactual_indices = [
-        model_unit.index_component(batched_counterfactual, batch=True)
+        model_unit.index_component(batched_counterfactual, batch=True, is_original=False)
         for model_units, batched_counterfactual in zip(model_units_list, batched_counterfactuals)
         for model_unit in model_units
     ]
@@ -459,6 +459,235 @@ def _collect_features(dataset, pipeline, model_units_list, config, verbose=False
     # Return nested list structure:
     # data[i][j] = tensor of shape (n_samples, n_features) for unit j in group i
     return data
+
+
+def _run_attribution_patching(
+    pipeline: Pipeline,
+    metric_fn: Callable,
+    counterfactual_dataset: CounterfactualDataset,
+    model_units_list: List[List[AtomicModelUnit]],
+    get_correct_token_fn: Callable,
+    get_other_choice_tokens_fn: Callable = None,
+    verbose: bool = False,
+    batch_size=32,
+) -> List[List[Dict[str, torch.Tensor]]]:
+    """
+    Run attribution patching on a counterfactual dataset.
+
+    Attribution patching approximates intervention effects using gradients:
+        attribution_score ≈ ∇L · (h_counterfactual - h_base)
+
+    This function:
+    1. Computes base activations with gradients using custom metric
+    2. Computes counterfactual activations without gradients
+    3. Calculates attribution scores as the dot product of gradients and activation differences
+
+    Args:
+        pipeline: The language model pipeline
+        metric_fn: Function to compute loss (receives logits, correct_token_ids, other_choice_ids)
+        counterfactual_dataset: Dataset with base and counterfactual inputs
+        model_units_list: Model units to compute attributions for
+        get_correct_token_fn: Function to extract correct answer token string from an input dict
+        get_other_choice_tokens_fn: Function to extract other choice token strings from an input dict (returns list of strings)
+        verbose: Whether to show progress bars
+        batch_size: Batch size for processing
+
+    Returns:
+        Nested list of dicts containing base/cf activations, gradients, and attribution scores
+    """
+    # Use collect intervention type to get activations with gradients
+    intervenable_model = _prepare_intervenable_model(
+        pipeline, model_units_list, intervention_type="collect"
+    )
+
+    # This ensures activations are part of the computation graph
+    intervenable_model.enable_model_gradients()
+
+    dataloader = DataLoader(
+        counterfactual_dataset.dataset,
+        batch_size=batch_size,
+        shuffle=False,  # Preserve original order
+        collate_fn=shallow_collate_fn,  # Use custom collate function to preserve nested structures
+    )
+
+    # Initialize container for collected features: one list per model unit group
+    data = [
+        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "sum_other_logits": [], "inputs": [], "logits": [], "correct_token_ids": [], "other_choice_token_ids": []} for _ in range(len(model_units))]
+        for model_units in model_units_list
+    ]
+
+    # Process dataset in batches with progress tracking
+    for batch in tqdm(
+        dataloader, desc="Processing batches", disable=not verbose, leave=False
+    ):
+        # Prepare batch data including base and counterfactual inputs
+        batched_base, batched_counterfactuals, inv_locations, feature_indices = (
+            _prepare_intervenable_inputs(pipeline, batch, model_units_list)
+        )
+        batch_len = batched_base["input_ids"].shape[0]
+
+        # Extract indices for mapping between base and source
+        source_indices, base_indices = inv_locations["sources->base"]
+
+        def process_activations(
+            activations_list,
+            model_units_list,
+            batch_len,
+            data_container,
+            mode: Literal["base", "cf"],
+        ):
+            total_units = sum(len(unit_group) for unit_group in model_units_list)
+
+            if len(activations_list) == total_units:
+                # pyvene 0.1.8+ format: one tensor per unit containing all batch samples
+                activation_idx = 0
+                for i in range(len(model_units_list)):
+                    for j in range(len(model_units_list[i])):
+                        unit_activations = activations_list[activation_idx]
+                        hidden_size = unit_activations.shape[-1]
+                        activations = unit_activations.reshape(-1, hidden_size)
+                        data_container[i][j][mode].extend(activations.cpu())
+                        if mode == "base":
+                            grads = unit_activations.grad.reshape(-1, hidden_size)
+                            data_container[i][j]["grad"].extend(grads.cpu())
+                        activation_idx += 1
+            else:
+                raise ValueError(
+                    f"Unexpected activations format. Length: {len(activations_list)}, "
+                    f"Expected either {total_units} or {total_units * batch_len}"
+                )
+
+        # Create mapping for base input activations (identical source and target)
+        base_map = {"sources->base": (base_indices, base_indices)}
+
+        with torch.set_grad_enabled(True):
+            # Single forward pass with intervenable_model returns BOTH outputs and activations
+            result = intervenable_model(
+                batched_base,
+                unit_locations=base_map,
+                output_original_output=True,
+                unsafe=True,
+                return_dict=True,
+            )
+
+            model_outputs = result.intervened_outputs
+            base_activations = result.collected_activations
+
+            for activation in base_activations:
+                activation.retain_grad()
+
+            # Extract logits
+            logits = model_outputs.logits if hasattr(model_outputs, 'logits') else model_outputs
+
+            # Extract correct tokens and convert to IDs
+            correct_token_strings = [get_correct_token_fn(item) for item in batch['input']]
+            correct_token_ids = [
+                pipeline.tokenizer.encode(token, add_special_tokens=False)[0]
+                for token in correct_token_strings
+            ]
+            correct_token_ids = torch.tensor(correct_token_ids, device=logits.device)
+
+            # Extract other choice tokens if function provided
+            other_choice_token_ids = None
+            if get_other_choice_tokens_fn is not None:
+                # get_other_choice_tokens_fn returns list of token strings for each item
+                other_choice_token_lists = [get_other_choice_tokens_fn(item) for item in batch['input']]
+                # Convert to token IDs: [[id1, id2], [id1, id2], ...]
+                other_choice_token_ids = [
+                    [pipeline.tokenizer.encode(token, add_special_tokens=False)[0] for token in tokens]
+                    for tokens in other_choice_token_lists
+                ]
+                other_choice_token_ids = torch.tensor(other_choice_token_ids, device=logits.device)
+
+            # Compute metric scores for each example (for later evaluation)
+            # metric_fn now returns (metric_scores, sum_other_logits)
+            metric_scores, sum_other_logits = metric_fn(logits, correct_token_ids, other_choice_token_ids)
+
+            loss = metric_scores.mean()
+            loss.backward()
+
+            # Extract last token logits for checker (same shape as metric computation)
+            # logits: (batch_size, seq_len, vocab_size)
+            last_logits = logits[:, -1, :].detach().cpu()  # [batch_size, vocab_size]
+
+            # Store inputs, metric scores, logits, and correct tokens for each model unit
+            for i in range(len(model_units_list)):
+                for j in range(len(model_units_list[i])):
+                    data[i][j]["inputs"].extend(batch['input'])
+                    data[i][j]["metric_scores"].extend(metric_scores.detach().cpu().tolist())
+                    data[i][j]["sum_other_logits"].extend(sum_other_logits.detach().cpu().tolist())
+                    # Store per-example logits and correct token IDs for checker
+                    data[i][j]["logits"].extend(last_logits)
+                    data[i][j]["correct_token_ids"].extend(correct_token_ids.cpu())
+                    # Store other choice token IDs if available
+                    if other_choice_token_ids is not None:
+                        data[i][j]["other_choice_token_ids"].extend(other_choice_token_ids.cpu())
+
+            # populate container with base and cf activations
+            process_activations(
+                base_activations, model_units_list, batch_len, data, mode="base"
+            )
+            del batched_base
+            del base_activations
+
+        # Collect counterfactual activations (no gradients needed)
+        source_map = {"sources->base": (source_indices, source_indices)}
+        with torch.no_grad():
+            # loop over GROUPS
+            for counterfactual in batched_counterfactuals:
+                counterfactual_activations = intervenable_model(
+                    counterfactual, unit_locations=source_map
+                )[0][1]
+                process_activations(
+                    counterfactual_activations, model_units_list, batch_len, data, mode="cf"
+                )
+                del counterfactual_activations
+        del batched_counterfactuals
+
+    # data[i][j] = tensor of shape (n_samples, n_features) for unit j in group i
+    data = [
+        [
+            {
+                "base": torch.stack(datum["base"]),
+                "cf": torch.stack(datum["cf"]),
+                "grad": torch.stack(datum["grad"]),
+                "inputs": datum["inputs"],  # Preserve inputs
+                "metric_scores": datum["metric_scores"],  # Preserve metric_scores
+                "sum_other_logits": datum["sum_other_logits"],  # Preserve sum of other choice logits
+                "logits": datum["logits"],  # Preserve logits for checker
+                "correct_token_ids": datum["correct_token_ids"],  # Preserve correct token IDs for checker
+                "other_choice_token_ids": datum["other_choice_token_ids"],  # Preserve other choice token IDs for checker
+            }
+            for datum in x
+        ]
+        for x in data
+    ]
+
+    # attribution score computation (use absolute value for magnitude of effect)
+    for i in range(len(data)):
+        for j in range(len(data[i])):
+            # Compute raw attribution score (gradient * activation difference)
+            # Shape: (n_samples,) after summing over features
+            raw_score_per_sample = torch.sum(
+                data[i][j]["grad"] * (data[i][j]["cf"] - data[i][j]["base"]), dim=-1
+            )
+
+            # Store aggregated attribution score (mean across samples)
+            data[i][j]["attribution_score"] = torch.abs(raw_score_per_sample.mean(dim=0))
+
+            # Compute per-example approximation of logit[correct] after intervention:
+            # approx ≈ logit_base[correct] + grad · (h_cf - h_base)
+            # where: metric_base = logit_base[correct] - sum(logit_base[other_choices])
+            # So: approx = metric_base + grad·Δh + sum(logit_base[other_choices])
+            metric_scores_tensor = torch.tensor(data[i][j]["metric_scores"])
+            sum_other_logits_tensor = torch.tensor(data[i][j]["sum_other_logits"])
+            data[i][j]["approx"] = raw_score_per_sample + metric_scores_tensor + sum_other_logits_tensor
+
+    # Clean up the intervenable model to free GPU memory
+    _delete_intervenable_model(intervenable_model)
+
+    return data
+
 
 def _train_intervention(pipeline: Pipeline,
                         model_units_list: List[AtomicModelUnit],
