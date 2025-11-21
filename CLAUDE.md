@@ -1,0 +1,1 @@
+- when using uv use --no-project to avoid numpy errors due to package resolution

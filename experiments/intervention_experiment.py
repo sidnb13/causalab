@@ -11,7 +11,7 @@ from sklearn.decomposition import TruncatedSVD
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from causal.causal_utils import compute_interchange_scores
+from causal.causal_utils import compute_attribution_scores, compute_interchange_scores
 from causal.counterfactual_dataset import CounterfactualDataset
 from experiments.config import DEFAULT_CONFIG
 from experiments.pyvene_core import (
@@ -367,13 +367,13 @@ class InterventionExperiment:
         progress_bar.close()
 
         # Compute scores for each target variable using checker
-        from causal.causal_utils import compute_attribution_scores
         results = compute_attribution_scores(
             results,
             self.causal_model,
             datasets,
             target_variables_list,
-            self.checker
+            self.checker,
+            self.pipeline  # Pass pipeline to tokenize counterfactual labels
         )
 
         # Save results if directory provided

@@ -85,63 +85,72 @@ class CheapArgmaxChecker(Checker):
         Compute difference between correct choice logit and other choice logits.
 
         Args:
-            logits: Logits tensor, shape [vocab_size] or [batch_size, vocab_size]
-            correct: Correct token index, shape [] or [batch_size]
-            other_choices: Other choice token indices, shape [n_choices] or [batch_size, n_choices]
+            logits: Logits tensor, shape [batch_size, vocab_size]
+            correct: Correct token index, shape [batch_size]
+            other_choices: Other choice token indices, shape [batch_size, n_choices]
 
         Returns:
             tuple: (metric, sum_other_logits) where
                 - metric = logits[correct] - sum(logits[other_choices])
                 - sum_other_logits = sum(logits[other_choices])
         """
-        is_batched = logits.dim() == 2
+        # logits: [batch_size, vocab_size]
+        # correct: [batch_size]
+        # other_choices: [batch_size, n_choices]
 
-        if is_batched:
-            # logits: [batch_size, vocab_size]
-            # correct: [batch_size]
-            # other_choices: [batch_size, n_choices]
-            correct_logits = logits.gather(-1, correct.unsqueeze(-1)).squeeze(-1)  # [batch_size]
+        assert (logits.argmax(-1) == correct).all(), \
+            f"Logits don't argmax to correct tokens. This means the model isn't predicting correctly on the base run."
+        correct_logits = logits.gather(-1, correct.unsqueeze(-1)).squeeze(
+            -1
+        )  # [batch_size]
 
-            # Gather all other choice logits: [batch_size, n_choices]
-            other_logits = logits.gather(-1, other_choices)
-            sum_other_logits = other_logits.sum(dim=-1)  # [batch_size]
+        # Gather all other choice logits: [batch_size, n_choices]
+        other_logits = logits.gather(-1, other_choices)
+        sum_other_logits = other_logits.sum(dim=-1)  # [batch_size]
 
-            # Return metric and sum of other logits
-            return correct_logits - sum_other_logits, sum_other_logits
-        else:
-            # logits: [vocab_size]
-            # correct: scalar
-            # other_choices: [n_choices]
-            correct_logit = logits[correct]  # scalar
-            other_logits = logits[other_choices]  # [n_choices]
-            sum_other_logits = other_logits.sum()  # scalar
+        # Return metric and sum of other logits
+        return other_logits.shape[
+            -1
+        ] * correct_logits - sum_other_logits, sum_other_logits
 
-            return correct_logit - sum_other_logits, sum_other_logits
-
+    @torch.no_grad()
     def check_attribution(self, attribution_score, **kwargs) -> float:
         """
         Check if attribution score indicates correct prediction.
 
         The attribution_score (approx) approximates: logit_cf[correct]
-        We compare against sum_other_logits_base to check if correct wins.
+        We patch this into base logits and check if argmax is correct.
 
         Args:
-            attribution_score: Approximated correct logit (scalar or tensor)
-            **kwargs: Must contain 'sum_other_logits' - sum of base other choice logits
+            attribution_score: Approximated correct logit tensor [batch_size]
+            **kwargs: Must contain:
+                - logits: base logits tensor [batch_size, vocab_size]
+                - correct: correct token index [batch_size]
 
         Returns:
-            1.0 if correct (approx > sum_other_logits), 0.0 otherwise
+            Tensor of shape [batch_size] with 1.0 where argmax(patched_logits) == correct, 0.0 otherwise
         """
-        sum_other_logits = kwargs.get("sum_other_logits")
-        if sum_other_logits is None:
-            raise ValueError("check_attribution requires 'sum_other_logits' in kwargs")
+        logits = kwargs.get("logits")
+        correct_index = kwargs.get("correct")
 
-        is_batched = isinstance(attribution_score, torch.Tensor) and attribution_score.dim() > 0
+        if logits is None or correct_index is None:
+            raise ValueError("check_attribution requires 'logits' and 'correct' in kwargs")
 
-        if is_batched:
-            return (attribution_score > sum_other_logits).float()
-        else:
-            return float(attribution_score > sum_other_logits)
+        # Batched processing
+        # attribution_score: [batch_size]
+        # correct_index: [batch_size]
+        # logits: [batch_size, vocab_size]
+        logits = logits.clone()  # Don't modify the original
+        # Replace the correct token's logit with the attribution score
+        patched_logits = logits.scatter(
+            dim=-1,
+            index=correct_index.unsqueeze(-1),
+            src=attribution_score.unsqueeze(-1)
+        )
+
+        # Check if the correct token has highest logit
+        predictions = torch.argmax(patched_logits, dim=-1)
+        return (predictions == correct_index).float()
 
 
 def can_distinguish_with_dataset(
@@ -269,12 +278,18 @@ def compute_attribution_scores(
     datasets: Union[Dict, "CounterfactualDataset"],
     target_variables_list: List[List[str]],
     checker: Callable,
+    pipeline = None,
 ) -> Dict:
     """
     Compute attribution scores for target variables using checker.
 
     Similar to compute_interchange_scores, but for attribution patching.
     Uses the stored metric scores and inputs to evaluate correctness per target variable.
+
+    IMPORTANT: This function checks whether the approximated intervened output matches
+    the COUNTERFACTUAL answer (not the base answer). This is consistent with how
+    interchange interventions work: we patch counterfactual activations into the base
+    run and check if the model now predicts the counterfactual answer.
 
     Args:
         raw_results: Dictionary from perform_attribution_patching containing
@@ -284,6 +299,7 @@ def compute_attribution_scores(
                  or single CounterfactualDataset (will be converted to dict)
         target_variables_list: List of target variable groups to evaluate
         checker: Checker instance to evaluate correctness (should support is_intervention=False)
+        pipeline: Pipeline with tokenizer to convert counterfactual labels to token IDs
 
     Returns:
         Dictionary with same structure as compute_interchange_scores:
@@ -322,10 +338,8 @@ def compute_attribution_scores(
             unit_data = attribution_data[0][0]
             inputs = unit_data.get("inputs", [])
             approx_scores = unit_data.get("approx", None)
-            sum_other_logits = unit_data.get("sum_other_logits", [])
             logits = unit_data.get("logits", [])
             correct_token_ids = unit_data.get("correct_token_ids", [])
-            other_choice_token_ids = unit_data.get("other_choice_token_ids", [])
 
             # Fall back to metric_scores if approx not available (backward compatibility)
             if approx_scores is None:
@@ -358,17 +372,34 @@ def compute_attribution_scores(
                     f"Length mismatch: {len(labeled_data)} vs {len(approx_scores)}"
                 )
 
-                # Compute correctness scores using checker
-                scores = []
-                for idx, approx_score in enumerate(approx_scores):
-                    # For CheapArgmaxChecker, we pass the approx score and sum_other_logits
-                    # The checker will evaluate: is approx > sum_other_logits?
-                    score = checker(
-                        approx_score,
-                        is_intervention=False,
-                        sum_other_logits=sum_other_logits[idx] if sum_other_logits else None
-                    )
-                    scores.append(score)
+                # Compute correctness scores using checker (batched)
+                # Convert to batched tensors
+                approx_tensor = torch.tensor(approx_scores) if not isinstance(approx_scores, torch.Tensor) else approx_scores
+                logits_tensor = torch.stack(logits)
+
+                # Get COUNTERFACTUAL correct tokens (what the model should output after patching)
+                if pipeline is not None:
+                    # Extract counterfactual labels and convert to token IDs
+                    counterfactual_labels = [example["label"] for example in labeled_data]
+                    counterfactual_token_ids = [
+                        pipeline.tokenizer.encode(label, add_special_tokens=False)[0]
+                        for label in counterfactual_labels
+                    ]
+                    counterfactual_tensor = torch.tensor(counterfactual_token_ids)
+                else:
+                    # Fallback to base correct tokens (old behavior)
+                    counterfactual_tensor = torch.stack(correct_token_ids)
+
+                # Call checker once with batched inputs
+                scores_tensor = checker(
+                    approx_tensor,
+                    is_intervention=False,
+                    logits=logits_tensor,
+                    correct=counterfactual_tensor  # Check against counterfactual answer!
+                )
+
+                # Convert to list
+                scores = scores_tensor.cpu().tolist() if isinstance(scores_tensor, torch.Tensor) else list(scores_tensor)
 
                 # Store processed results
                 results["dataset"][dataset_name]["model_unit"][model_units_str][

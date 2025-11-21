@@ -10,6 +10,7 @@ matplotlib.use(
     "Agg"
 )  # Use non-interactive backend to prevent plot windows from showing
 
+import argparse
 import copy
 import os
 import time
@@ -22,6 +23,27 @@ from experiments.LM_experiments.residual_stream_experiment import PatchResidualS
 from neural.pipeline import LMPipeline
 from tasks.MCQA.causal_models import get_answer, get_answer_position
 from tasks.MCQA.mcqa import MCQA_task
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(
+    description="Compare Activation Patching vs Attribution Patching"
+)
+parser.add_argument(
+    "--skip-activation",
+    action="store_true",
+    help="Skip activation patching and only run attribution patching",
+)
+parser.add_argument(
+    "--num-examples",
+    type=int,
+    default=128,
+    help="Number of examples in each dataset (default: 128)",
+)
+args = parser.parse_args()
+
+print(f"Running with options:")
+print(f"  - Skip activation patching: {args.skip_activation}")
+print(f"  - Number of examples: {args.num_examples}")
 
 # Setup - Use GPU acceleration if available (CUDA or MPS)
 if torch.cuda.is_available():
@@ -59,8 +81,7 @@ os.makedirs(results_dir_patching, exist_ok=True)
 os.makedirs(results_dir_attribution, exist_ok=True)
 
 # Create datasets
-size = 256  # Smaller for faster iteration while testing
-counterfactual_datasets = MCQA_task.create_datasets(size)
+counterfactual_datasets = MCQA_task.create_datasets(args.num_examples)
 
 # Filter datasets using intervention checker
 exp = FilterExperiment(pipeline, causal_model, intervention_checker)
@@ -106,57 +127,63 @@ experiment = PatchResidualStream(
 # ==============================================================================
 # METHOD 1: REGULAR ACTIVATION PATCHING
 # ==============================================================================
-start_time = time.time()
+if not args.skip_activation:
+    start_time = time.time()
 
-patching_results = experiment.perform_interventions(
-    filtered_datasets, verbose=True, target_variables_list=target_variables_list
-)
-
-patching_time = time.time() - start_time
-
-# Generate activation patching visualizations
-
-# Different Symbol
-if "different_symbol" in filtered_datasets:
-    diff_results_patching = copy.deepcopy(patching_results)
-    if "same_symbol_different_position" in diff_results_patching["dataset"]:
-        del diff_results_patching["dataset"]["same_symbol_different_position"]
-    if "random_counterfactual" in diff_results_patching["dataset"]:
-        del diff_results_patching["dataset"]["random_counterfactual"]
-    experiment.plot_heatmaps(
-        diff_results_patching, ["answer"], save_path=results_dir_patching
-    )
-    experiment.plot_heatmaps(
-        diff_results_patching, ["answer_position"], save_path=results_dir_patching
+    patching_results = experiment.perform_interventions(
+        filtered_datasets, verbose=True, target_variables_list=target_variables_list
     )
 
-# Same Symbol Different Position
-if "same_symbol_different_position" in filtered_datasets:
-    same_diff_results_patching = copy.deepcopy(patching_results)
-    if "different_symbol" in same_diff_results_patching["dataset"]:
-        del same_diff_results_patching["dataset"]["different_symbol"]
-    if "random_counterfactual" in same_diff_results_patching["dataset"]:
-        del same_diff_results_patching["dataset"]["random_counterfactual"]
-    experiment.plot_heatmaps(
-        same_diff_results_patching, ["answer_position"], save_path=results_dir_patching
-    )
-    experiment.plot_heatmaps(
-        same_diff_results_patching, ["answer"], save_path=results_dir_patching
-    )
+    patching_time = time.time() - start_time
 
-# Random
-if "random_counterfactual" in filtered_datasets:
-    random_results_patching = copy.deepcopy(patching_results)
-    if "different_symbol" in random_results_patching["dataset"]:
-        del random_results_patching["dataset"]["different_symbol"]
-    if "same_symbol_different_position" in random_results_patching["dataset"]:
-        del random_results_patching["dataset"]["same_symbol_different_position"]
-    experiment.plot_heatmaps(
-        random_results_patching, ["answer_position"], save_path=results_dir_patching
-    )
-    experiment.plot_heatmaps(
-        random_results_patching, ["answer"], save_path=results_dir_patching
-    )
+    # Generate activation patching visualizations
+
+    # Different Symbol
+    if "different_symbol" in filtered_datasets:
+        diff_results_patching = copy.deepcopy(patching_results)
+        if "same_symbol_different_position" in diff_results_patching["dataset"]:
+            del diff_results_patching["dataset"]["same_symbol_different_position"]
+        if "random_counterfactual" in diff_results_patching["dataset"]:
+            del diff_results_patching["dataset"]["random_counterfactual"]
+        experiment.plot_heatmaps(
+            diff_results_patching, ["answer"], save_path=results_dir_patching
+        )
+        experiment.plot_heatmaps(
+            diff_results_patching, ["answer_position"], save_path=results_dir_patching
+        )
+
+    # Same Symbol Different Position
+    if "same_symbol_different_position" in filtered_datasets:
+        same_diff_results_patching = copy.deepcopy(patching_results)
+        if "different_symbol" in same_diff_results_patching["dataset"]:
+            del same_diff_results_patching["dataset"]["different_symbol"]
+        if "random_counterfactual" in same_diff_results_patching["dataset"]:
+            del same_diff_results_patching["dataset"]["random_counterfactual"]
+        experiment.plot_heatmaps(
+            same_diff_results_patching,
+            ["answer_position"],
+            save_path=results_dir_patching,
+        )
+        experiment.plot_heatmaps(
+            same_diff_results_patching, ["answer"], save_path=results_dir_patching
+        )
+
+    # Random
+    if "random_counterfactual" in filtered_datasets:
+        random_results_patching = copy.deepcopy(patching_results)
+        if "different_symbol" in random_results_patching["dataset"]:
+            del random_results_patching["dataset"]["different_symbol"]
+        if "same_symbol_different_position" in random_results_patching["dataset"]:
+            del random_results_patching["dataset"]["same_symbol_different_position"]
+        experiment.plot_heatmaps(
+            random_results_patching, ["answer_position"], save_path=results_dir_patching
+        )
+        experiment.plot_heatmaps(
+            random_results_patching, ["answer"], save_path=results_dir_patching
+        )
+else:
+    print("Skipping activation patching (--skip-activation flag set)")
+    patching_time = 0
 
 # ==============================================================================
 # METHOD 2: ATTRIBUTION PATCHING
@@ -166,7 +193,9 @@ if "random_counterfactual" in filtered_datasets:
 # Define token extraction function
 def get_correct_token(item):
     pos = get_answer_position(item["object_color"], item["choice0"], item["choice1"])
-    return get_answer(pos, item["symbol0"], item["symbol1"])
+    answer = get_answer(pos, item["symbol0"], item["symbol1"])
+    # Add leading space because model generates tokens with leading space
+    return " " + answer if answer else None
 
 
 # Define function to get other choice tokens (for fixed attribution patching)
@@ -174,11 +203,11 @@ def get_other_choice_tokens(item):
     """Return the token that is NOT the correct answer."""
     pos = get_answer_position(item["object_color"], item["choice0"], item["choice1"])
     correct = get_answer(pos, item["symbol0"], item["symbol1"])
-    # Return the other choice
+    # Return the other choice (with leading space)
     if correct == item["symbol0"]:
-        return [item["symbol1"]]
+        return [" " + item["symbol1"]]
     else:
-        return [item["symbol0"]]
+        return [" " + item["symbol0"]]
 
 
 # Define metric function for batched inputs (FIXED: now requires other_choice_token_ids)
@@ -188,17 +217,10 @@ def metric_fn(logits, correct_token_ids, other_choice_token_ids):
     # other_choice_token_ids: (batch_size, n_choices)
     last_logits = logits[:, -1, :]  # Get logits for last token
 
-    # compute_score now returns (metric, sum_other_logits)
-    results = [
-        CheapArgmaxChecker.compute_score(
-            last_logits[i], correct_token_ids[i], other_choice_token_ids[i]
-        )
-        for i in range(len(correct_token_ids))
-    ]
-
-    # Unpack metrics and sum_other_logits
-    metrics = torch.stack([r[0] for r in results])
-    sum_other_logits = torch.stack([r[1] for r in results])
+    # compute_score takes batched inputs and returns (metrics, sum_other_logits)
+    metrics, sum_other_logits = CheapArgmaxChecker.compute_score(
+        last_logits, correct_token_ids, other_choice_token_ids
+    )
 
     return metrics, sum_other_logits
 
@@ -270,6 +292,9 @@ if "random_counterfactual" in filtered_datasets:
         random_results_attribution, ["answer"], save_path=results_dir_attribution
     )
 
-print(f"\nExecution times:")
-print(f"  Activation Patching: {patching_time:.2f}s")
-print(f"  Attribution Patching: {attribution_time:.2f}s")
+print("\nExecution times:")
+if not args.skip_activation:
+    print(f"  Activation Patching: {patching_time:.2f}s")
+    print(f"  Attribution Patching: {attribution_time:.2f}s")
+else:
+    print(f"  Attribution Patching: {attribution_time:.2f}s")

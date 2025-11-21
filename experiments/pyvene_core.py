@@ -11,7 +11,7 @@ intervention execution, and training functions.
 import collections
 import gc
 import logging
-from typing import Callable, Dict, List, Literal, Union
+from typing import Callable, Dict, List, Literal
 
 import numpy as np
 import torch

@@ -374,7 +374,7 @@ class PatchResidualStream(InterventionExperiment):
         safe_dataset_name = dataset_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
 
         # Set title based on method type
-        metric_name = "Normalized Attribution Score" if is_attribution else "Intervention Accuracy"
+        metric_name = "Attribution Approximation Accuracy" if is_attribution else "Intervention Accuracy"
         # Use experiment_id if available, fallback to task_name for compatibility
         experiment_id = results.get("experiment_id", results.get("task_name", "unknown"))
         title = f'{metric_name} - Dataset: {dataset_name}\nExperiment: {experiment_id}\nIntervened Variables: {target_variables_str}'
@@ -396,7 +396,7 @@ class PatchResidualStream(InterventionExperiment):
         matrices = self._build_score_matrix(results, layers, positions, target_variables_str)
 
         # Set metric name based on method type
-        metric_name = "Normalized Attribution Score" if is_attribution else "Intervention Accuracy"
+        metric_name = "Attribution Approximation Accuracy" if is_attribution else "Intervention Accuracy"
         # Use experiment_id if available, fallback to task_name for compatibility
         experiment_id = results.get("experiment_id", results.get("task_name", "unknown"))
 
@@ -429,7 +429,7 @@ class PatchResidualStream(InterventionExperiment):
             is_attribution: Whether this is attribution patching (affects labels)
         """
         # Set colorbar label based on method type
-        cbar_label = 'Normalized Attribution Score (%)' if is_attribution else 'Accuracy (%)'
+        cbar_label = 'Score (%)' if is_attribution else 'Accuracy (%)'
         
         # Use the consolidated visualization function
         create_heatmap(
