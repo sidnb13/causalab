@@ -12,7 +12,13 @@ from causal.counterfactual_dataset import CounterfactualDataset
 class Checker:
     """Base class for checking if intervention/attribution output is correct."""
 
-    def __call__(self, output_or_score, expected_label=None, is_intervention: bool = True, **kwargs) -> float:
+    def __call__(
+        self,
+        output_or_score,
+        expected_label=None,
+        is_intervention: bool = True,
+        **kwargs,
+    ) -> float:
         """
         Check correctness based on method type.
 
@@ -75,7 +81,9 @@ class CheapArgmaxChecker(Checker):
 
     def check_intervention(self, output_dict, expected_label) -> float:
         """Not supported - CheapArgmaxChecker is only for attribution patching."""
-        raise NotImplementedError("CheapArgmaxChecker only supports attribution patching")
+        raise NotImplementedError(
+            "CheapArgmaxChecker only supports attribution patching"
+        )
 
     @staticmethod
     def compute_score(
@@ -98,8 +106,9 @@ class CheapArgmaxChecker(Checker):
         # correct: [batch_size]
         # other_choices: [batch_size, n_choices]
 
-        assert (logits.argmax(-1) == correct).all(), \
+        assert (logits.argmax(-1) == correct).all(), (
             f"Logits don't argmax to correct tokens. This means the model isn't predicting correctly on the base run."
+        )
         correct_logits = logits.gather(-1, correct.unsqueeze(-1)).squeeze(
             -1
         )  # [batch_size]
@@ -109,48 +118,18 @@ class CheapArgmaxChecker(Checker):
         sum_other_logits = other_logits.sum(dim=-1)  # [batch_size]
 
         # Return metric and sum of other logits
-        return other_logits.shape[
+        return (other_logits.shape[
             -1
-        ] * correct_logits - sum_other_logits, sum_other_logits
+        ] * correct_logits - sum_other_logits), sum_other_logits
 
     @torch.no_grad()
     def check_attribution(self, attribution_score, **kwargs) -> float:
         """
         Check if attribution score indicates correct prediction.
-
-        The attribution_score (approx) approximates: logit_cf[correct]
-        We patch this into base logits and check if argmax is correct.
-
-        Args:
-            attribution_score: Approximated correct logit tensor [batch_size]
-            **kwargs: Must contain:
-                - logits: base logits tensor [batch_size, vocab_size]
-                - correct: correct token index [batch_size]
-
         Returns:
             Tensor of shape [batch_size] with 1.0 where argmax(patched_logits) == correct, 0.0 otherwise
         """
-        logits = kwargs.get("logits")
-        correct_index = kwargs.get("correct")
-
-        if logits is None or correct_index is None:
-            raise ValueError("check_attribution requires 'logits' and 'correct' in kwargs")
-
-        # Batched processing
-        # attribution_score: [batch_size]
-        # correct_index: [batch_size]
-        # logits: [batch_size, vocab_size]
-        logits = logits.clone()  # Don't modify the original
-        # Replace the correct token's logit with the attribution score
-        patched_logits = logits.scatter(
-            dim=-1,
-            index=correct_index.unsqueeze(-1),
-            src=attribution_score.unsqueeze(-1)
-        )
-
-        # Check if the correct token has highest logit
-        predictions = torch.argmax(patched_logits, dim=-1)
-        return (predictions == correct_index).float()
+        return (attribution_score > 0).float()
 
 
 def can_distinguish_with_dataset(
@@ -158,7 +137,7 @@ def can_distinguish_with_dataset(
     causal_model1,
     target_variables1,
     causal_model2=None,
-    target_variables2=None
+    target_variables2=None,
 ):
     """
     Check if two causal models can be distinguished using interchange interventions
@@ -198,27 +177,31 @@ def can_distinguish_with_dataset(
 
         # Run interchange intervention on first model
         setting1 = causal_model1.run_interchange(
-            input_data,
-            {var: counterfactual_inputs[0] for var in target_variables1}
+            input_data, {var: counterfactual_inputs[0] for var in target_variables1}
         )
 
         if causal_model2 is not None and target_variables2 is not None:
             # Run interchange intervention on second model
             setting2 = causal_model2.run_interchange(
-                input_data,
-                {var: counterfactual_inputs[0] for var in target_variables2}
+                input_data, {var: counterfactual_inputs[0] for var in target_variables2}
             )
             if setting1["raw_output"] != setting2["raw_output"]:
                 count += 1
         else:
             # Compare against forward pass of first model
-            if setting1["raw_output"] != causal_model1.run_forward(input_data)["raw_output"]:
+            if (
+                setting1["raw_output"]
+                != causal_model1.run_forward(input_data)["raw_output"]
+            ):
                 count += 1
 
     proportion = count / len(dataset)
-    print(f"Can distinguish between {target_variables1} and {target_variables2}: {count} out of {len(dataset)} examples")
+    print(
+        f"Can distinguish between {target_variables1} and {target_variables2}: {count} out of {len(dataset)} examples"
+    )
     print(f"Proportion of distinguishable examples: {proportion:.2f}")
     return {"proportion": proportion, "count": count}
+
 
 def statement_conjunction_function(filled_statements: List, delimiters: list) -> str:
     """
@@ -227,21 +210,21 @@ def statement_conjunction_function(filled_statements: List, delimiters: list) ->
     Args:
         filled_statements: List of filled statement strings
         delimiters: List of delimiters to use between statements
-    
+
     Returns:
         A single string combining all statements with proper punctuation, seen below:
         "Statement one delimiter one statement two delimiter two ... statement N delimiter N+1."
 
     """
-    #Capitalize first letter and ensure it ends with a period.
+    # Capitalize first letter and ensure it ends with a period.
     fill_index = delimiters.index("FILL")
-    filler = delimiters[fill_index-1]
-    new_delimiters = delimiters[:fill_index-1] + delimiters[fill_index+1:]
+    filler = delimiters[fill_index - 1]
+    new_delimiters = delimiters[: fill_index - 1] + delimiters[fill_index + 1 :]
     for _ in range(len(filled_statements) - len(new_delimiters)):
-        new_delimiters.insert(fill_index-1, filler)
-    
+        new_delimiters.insert(fill_index - 1, filler)
+
     if len(new_delimiters) > len(filled_statements):
-        new_delimiters = new_delimiters[-len(filled_statements):]
+        new_delimiters = new_delimiters[-len(filled_statements) :]
 
     statements = []
     for i in range(len(filled_statements)):
@@ -250,10 +233,10 @@ def statement_conjunction_function(filled_statements: List, delimiters: list) ->
         words = statement.split()
         # Capitalize first letter and ensure it ends with a period.
         words[0] = words[0].capitalize()
-        statements.append(' '.join(words).rstrip(new_delimiters[-1]))
-    conjunction = statements[0] 
+        statements.append(" ".join(words).rstrip(new_delimiters[-1]))
+    conjunction = statements[0]
     for i in range(1, len(statements)):
-        conjunction += new_delimiters[i-1] + statements[i]
+        conjunction += new_delimiters[i - 1] + statements[i]
     conjunction += new_delimiters[-1]
     return conjunction
 
@@ -278,7 +261,7 @@ def compute_attribution_scores(
     datasets: Union[Dict, "CounterfactualDataset"],
     target_variables_list: List[List[str]],
     checker: Callable,
-    pipeline = None,
+    pipeline=None,
 ) -> Dict:
     """
     Compute attribution scores for target variables using checker.
@@ -314,7 +297,7 @@ def compute_attribution_scores(
 
     # Detach tensors before deep copying (tensors with gradients can't be deep copied)
     raw_results_detached = _detach_tensors(raw_results)
-    
+
     # Create a deep copy to avoid modifying the input
     results = copy.deepcopy(raw_results_detached)
 
@@ -374,13 +357,19 @@ def compute_attribution_scores(
 
                 # Compute correctness scores using checker (batched)
                 # Convert to batched tensors
-                approx_tensor = torch.tensor(approx_scores) if not isinstance(approx_scores, torch.Tensor) else approx_scores
+                approx_tensor = (
+                    torch.tensor(approx_scores)
+                    if not isinstance(approx_scores, torch.Tensor)
+                    else approx_scores
+                )
                 logits_tensor = torch.stack(logits)
 
                 # Get COUNTERFACTUAL correct tokens (what the model should output after patching)
                 if pipeline is not None:
                     # Extract counterfactual labels and convert to token IDs
-                    counterfactual_labels = [example["label"] for example in labeled_data]
+                    counterfactual_labels = [
+                        example["label"] for example in labeled_data
+                    ]
                     counterfactual_token_ids = [
                         pipeline.tokenizer.encode(label, add_special_tokens=False)[0]
                         for label in counterfactual_labels
@@ -395,11 +384,15 @@ def compute_attribution_scores(
                     approx_tensor,
                     is_intervention=False,
                     logits=logits_tensor,
-                    correct=counterfactual_tensor  # Check against counterfactual answer!
+                    correct=counterfactual_tensor,  # Check against counterfactual answer!
                 )
 
                 # Convert to list
-                scores = scores_tensor.cpu().tolist() if isinstance(scores_tensor, torch.Tensor) else list(scores_tensor)
+                scores = (
+                    scores_tensor.cpu().tolist()
+                    if isinstance(scores_tensor, torch.Tensor)
+                    else list(scores_tensor)
+                )
 
                 # Store processed results
                 results["dataset"][dataset_name]["model_unit"][model_units_str][
@@ -412,9 +405,9 @@ def compute_attribution_scores(
 def compute_interchange_scores(
     raw_results: Dict,
     causal_model,
-    datasets: Union[Dict, 'CounterfactualDataset'],
+    datasets: Union[Dict, "CounterfactualDataset"],
     target_variables_list: List[List[str]],
-    checker: Callable
+    checker: Callable,
 ) -> Dict:
     """
     Process raw intervention results by computing scores for target variables.
@@ -482,7 +475,9 @@ def compute_interchange_scores(
         if dataset_name not in results["dataset"]:
             continue
 
-        for model_units_str, model_unit_data in results["dataset"][dataset_name]["model_unit"].items():
+        for model_units_str, model_unit_data in results["dataset"][dataset_name][
+            "model_unit"
+        ].items():
             if model_unit_data is None:
                 continue
 
@@ -506,16 +501,20 @@ def compute_interchange_scores(
                 dumped_outputs.extend(batch_strings)
                 # Create individual output dicts for each example in the batch
                 for idx, decoded_str in enumerate(batch_strings):
-                    example_dict = {"sequences": batch_dict["sequences"][idx:idx+1]}
+                    example_dict = {"sequences": batch_dict["sequences"][idx : idx + 1]}
 
                     # Handle top-K formatted scores (list of dicts)
                     if "scores" in batch_dict and batch_dict["scores"]:
                         example_dict["scores"] = []
                         for score_dict in batch_dict["scores"]:
                             sliced_score = {
-                                "top_k_logits": score_dict["top_k_logits"][idx:idx+1],
-                                "top_k_indices": score_dict["top_k_indices"][idx:idx+1],
-                                "top_k_tokens": [score_dict["top_k_tokens"][idx]]
+                                "top_k_logits": score_dict["top_k_logits"][
+                                    idx : idx + 1
+                                ],
+                                "top_k_indices": score_dict["top_k_indices"][
+                                    idx : idx + 1
+                                ],
+                                "top_k_tokens": [score_dict["top_k_tokens"][idx]],
                             }
                             example_dict["scores"].append(sliced_score)
 
@@ -529,15 +528,16 @@ def compute_interchange_scores(
 
                 # Generate expected outputs from causal model
                 labeled_data = causal_model.label_counterfactual_data(
-                    datasets[dataset_name],
-                    target_variables
+                    datasets[dataset_name], target_variables
                 )
 
                 # Validate alignment
-                assert len(labeled_data) == len(dumped_outputs), \
+                assert len(labeled_data) == len(dumped_outputs), (
                     f"Length mismatch: {len(labeled_data)} vs {len(dumped_outputs)}"
-                assert len(labeled_data) == len(flattened_outputs), \
+                )
+                assert len(labeled_data) == len(flattened_outputs), (
                     f"Length mismatch: {len(labeled_data)} vs {len(flattened_outputs)}"
+                )
 
                 # Compute intervention scores - pass neural dict and expected label
                 scores = []
@@ -548,9 +548,8 @@ def compute_interchange_scores(
                     scores.append(float(score))
 
                 # Store processed results in the same structure as perform_interventions
-                results["dataset"][dataset_name]["model_unit"][model_units_str][target_variable_str] = {
-                    "scores": scores,
-                    "average_score": np.mean(scores)
-                }
+                results["dataset"][dataset_name]["model_unit"][model_units_str][
+                    target_variable_str
+                ] = {"scores": scores, "average_score": np.mean(scores)}
 
     return results

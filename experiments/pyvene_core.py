@@ -680,8 +680,7 @@ def _run_attribution_patching(
             # where: metric_base = logit_base[correct] - sum(logit_base[other_choices])
             # So: approx = metric_base + grad·Δh + sum(logit_base[other_choices])
             metric_scores_tensor = torch.tensor(data[i][j]["metric_scores"])
-            sum_other_logits_tensor = torch.tensor(data[i][j]["sum_other_logits"])
-            data[i][j]["approx"] = raw_score_per_sample + metric_scores_tensor + sum_other_logits_tensor
+            data[i][j]["approx"] = raw_score_per_sample + metric_scores_tensor
 
     # Clean up the intervenable model to free GPU memory
     _delete_intervenable_model(intervenable_model)
