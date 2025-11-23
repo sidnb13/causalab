@@ -32,17 +32,18 @@ COPY scripts/ray-init.sh /usr/local/bin/ray-init.sh
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/ray-init.sh /usr/local/bin/entrypoint.sh
 
-# Copy only dependency files
+# Copy only dependency files and mlt package
 COPY pyproject.toml uv.lock* ./
+COPY src/mlt ./src/mlt
 
-# Copy pyvene submodule
-COPY pyvene/ ./pyvene/
-
-# Install everything to system Python
+# Install everything to system Python, including LSP tools and mlt for watchdog
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -e ".[${DEPENDENCY_TAGS}]" && \
-    uv pip install --system -e ./pyvene --no-deps && \
-    uv pip install --system ipdb
+    uv pip install --system ipdb ruff basedpyright && \
+    uv pip install --system ./src/mlt
+
+# Create LSP view directory (will be mounted and hardlinked from real site-packages)
+RUN mkdir -p /opt/lsp-packages
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["zsh"]

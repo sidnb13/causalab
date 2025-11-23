@@ -1,0 +1,16 @@
+{
+  "lsp": {
+    "ruff": {
+      "binary": {
+        "path": "mlt",
+        "arguments": ["lsp-proxy", "ruff", "server"]
+      }
+    },
+    "basedpyright": {
+      "binary": {
+        "path": "mlt",
+        "arguments": ["lsp-proxy", "basedpyright-langserver", "--stdio"]
+      }
+    }
+  }
+}

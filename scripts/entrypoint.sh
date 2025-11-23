@@ -1,6 +1,29 @@
 #!/bin/bash
 set -e # Exit on error
 
+# Start LSP sync watchdog daemon (monitors site-packages and auto-syncs to LSP view)
+if command -v mlt &>/dev/null; then
+    echo "👀 Starting LSP sync watchdog daemon..."
+    # Run in background, redirect output to log file
+    nohup mlt sync-lsp --daemon >/tmp/mlt-sync-lsp.log 2>&1 &
+    echo "✅ Watchdog running (PID: $!) - logs at /tmp/mlt-sync-lsp.log"
+else
+    echo "⚠️  mlt command not found, skipping LSP sync watchdog"
+    echo "   (Install with: pip install mlt-toolbox)"
+
+    # Fallback: one-time sync
+    PYTHON_SHORT=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    SITE_PACKAGES="/usr/local/lib/python${PYTHON_SHORT}/dist-packages"
+    LSP_PACKAGES="/opt/lsp-packages"
+
+    if [ -d "$SITE_PACKAGES" ] && [ -d "$LSP_PACKAGES" ]; then
+        echo "🔗 Doing one-time package sync (hardlinks)..."
+        cp -alu "$SITE_PACKAGES"/. "$LSP_PACKAGES"/ 2>/dev/null || true
+        PACKAGE_COUNT=$(find "$LSP_PACKAGES" -mindepth 1 -maxdepth 1 ! -name '__pycache__' -type d | wc -l)
+        echo "✅ LSP view ready with ${PACKAGE_COUNT} packages"
+    fi
+fi
+
 # Start a new SSH agent
 eval $(ssh-agent -s)
 
