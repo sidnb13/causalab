@@ -3,13 +3,13 @@
     "ruff": {
       "binary": {
         "path": "mlt",
-        "arguments": ["lsp-proxy", "ruff", "server"]
+        "arguments": ["lsp-auto", "ruff", "server"]
       }
     },
     "basedpyright": {
       "binary": {
         "path": "mlt",
-        "arguments": ["lsp-proxy", "basedpyright-langserver", "--stdio"]
+        "arguments": ["lsp-auto", "basedpyright-langserver", "--stdio"]
       }
     }
   }
