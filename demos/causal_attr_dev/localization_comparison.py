@@ -77,16 +77,12 @@ results_dir_patching = os.path.join(
 results_dir_attribution = os.path.join(
     script_dir, "comparison_results/attribution_patching"
 )
-# Separate directories for continuous score heatmaps
-results_dir_patching_continuous = os.path.join(
-    script_dir, "comparison_results/activation_patching_continuous"
-)
+# Separate directory for attribution patching continuous score heatmaps
 results_dir_attribution_continuous = os.path.join(
     script_dir, "comparison_results/attribution_patching_continuous"
 )
 os.makedirs(results_dir_patching, exist_ok=True)
 os.makedirs(results_dir_attribution, exist_ok=True)
-os.makedirs(results_dir_patching_continuous, exist_ok=True)
 os.makedirs(results_dir_attribution_continuous, exist_ok=True)
 
 # Create datasets
@@ -133,23 +129,12 @@ experiment = PatchResidualStream(
     config=config,
 )
 
-# Define token extraction functions (used by both methods)
+# Define token extraction function for attribution patching
 def get_correct_token(item):
     pos = get_answer_position(item["object_color"], item["choice0"], item["choice1"])
     answer = get_answer(pos, item["symbol0"], item["symbol1"])
     # Add leading space because model generates tokens with leading space
     return " " + answer if answer else None
-
-
-def get_other_choice_tokens(item):
-    """Return the token that is NOT the correct answer."""
-    pos = get_answer_position(item["object_color"], item["choice0"], item["choice1"])
-    correct = get_answer(pos, item["symbol0"], item["symbol1"])
-    # Return the other choice (with leading space)
-    if correct == item["symbol0"]:
-        return [" " + item["symbol1"]]
-    else:
-        return [" " + item["symbol0"]]
 
 
 # ==============================================================================
@@ -159,13 +144,12 @@ if not args.skip_activation:
     start_time = time.time()
 
     patching_results = experiment.perform_interventions(
-        filtered_datasets, verbose=True, target_variables_list=target_variables_list,
-        get_correct_token_fn=get_correct_token, get_other_choice_tokens_fn=get_other_choice_tokens
+        filtered_datasets, verbose=True, target_variables_list=target_variables_list
     )
 
     patching_time = time.time() - start_time
 
-    # Generate activation patching visualizations (accuracy and continuous scores)
+    # Generate activation patching visualizations (accuracy heatmaps)
 
     # Different Symbol
     if "different_symbol" in filtered_datasets:
@@ -174,19 +158,11 @@ if not args.skip_activation:
             del diff_results_patching["dataset"]["same_symbol_different_position"]
         if "random_counterfactual" in diff_results_patching["dataset"]:
             del diff_results_patching["dataset"]["random_counterfactual"]
-        # Accuracy heatmaps
         experiment.plot_heatmaps(
             diff_results_patching, ["answer"], save_path=results_dir_patching
         )
         experiment.plot_heatmaps(
             diff_results_patching, ["answer_position"], save_path=results_dir_patching
-        )
-        # Continuous score heatmaps
-        experiment.plot_heatmaps(
-            diff_results_patching, ["answer"], save_path=results_dir_patching_continuous, score_type="continuous"
-        )
-        experiment.plot_heatmaps(
-            diff_results_patching, ["answer_position"], save_path=results_dir_patching_continuous, score_type="continuous"
         )
 
     # Same Symbol Different Position
@@ -196,7 +172,6 @@ if not args.skip_activation:
             del same_diff_results_patching["dataset"]["different_symbol"]
         if "random_counterfactual" in same_diff_results_patching["dataset"]:
             del same_diff_results_patching["dataset"]["random_counterfactual"]
-        # Accuracy heatmaps
         experiment.plot_heatmaps(
             same_diff_results_patching,
             ["answer_position"],
@@ -204,13 +179,6 @@ if not args.skip_activation:
         )
         experiment.plot_heatmaps(
             same_diff_results_patching, ["answer"], save_path=results_dir_patching
-        )
-        # Continuous score heatmaps
-        experiment.plot_heatmaps(
-            same_diff_results_patching, ["answer_position"], save_path=results_dir_patching_continuous, score_type="continuous"
-        )
-        experiment.plot_heatmaps(
-            same_diff_results_patching, ["answer"], save_path=results_dir_patching_continuous, score_type="continuous"
         )
 
     # Random
@@ -220,19 +188,11 @@ if not args.skip_activation:
             del random_results_patching["dataset"]["different_symbol"]
         if "same_symbol_different_position" in random_results_patching["dataset"]:
             del random_results_patching["dataset"]["same_symbol_different_position"]
-        # Accuracy heatmaps
         experiment.plot_heatmaps(
             random_results_patching, ["answer_position"], save_path=results_dir_patching
         )
         experiment.plot_heatmaps(
             random_results_patching, ["answer"], save_path=results_dir_patching
-        )
-        # Continuous score heatmaps
-        experiment.plot_heatmaps(
-            random_results_patching, ["answer_position"], save_path=results_dir_patching_continuous, score_type="continuous"
-        )
-        experiment.plot_heatmaps(
-            random_results_patching, ["answer"], save_path=results_dir_patching_continuous, score_type="continuous"
         )
 else:
     print("Skipping activation patching (--skip-activation flag set)")
@@ -242,22 +202,6 @@ else:
 # METHOD 2: ATTRIBUTION PATCHING
 # ==============================================================================
 
-
-# Define metric function for batched inputs
-def metric_fn(logits, correct_token_ids, other_choice_token_ids):
-    # logits: (batch_size, seq_len, vocab_size)
-    # correct_token_ids: (batch_size,)
-    # other_choice_token_ids: (batch_size, n_choices)
-    last_logits = logits[:, -1, :]  # Get logits for last token
-
-    # compute_score takes batched inputs and returns metrics
-    metrics = CheapArgmaxChecker.compute_score(
-        last_logits, correct_token_ids, other_choice_token_ids
-    )
-
-    return metrics
-
-
 start_time = time.time()
 
 # Switch to attribution checker for this experiment
@@ -265,11 +209,9 @@ experiment.checker = attribution_checker
 
 attribution_results = experiment.perform_attribution_patching(
     filtered_datasets,
-    metric_fn=metric_fn,
     get_correct_token_fn=get_correct_token,
-    get_other_choice_tokens_fn=get_other_choice_tokens,  # FIXED: Pass other choices function
     verbose=True,
-    target_variables_list=target_variables_list,  # Use same target variables as activation patching
+    target_variables_list=target_variables_list,
 )
 
 # Switch back to intervention checker

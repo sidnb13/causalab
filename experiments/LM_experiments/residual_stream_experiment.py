@@ -105,7 +105,7 @@ class PatchResidualStream(InterventionExperiment):
         self.token_positions = token_positions
         self._token_positions_sorted = False  # Track if we've sorted yet
 
-    def perform_interventions(self, datasets, verbose: bool = False, save_dir=None, include_actual_outputs: bool = False, target_variables_list=None, causal_model=None, checker=None, get_correct_token_fn=None, get_other_choice_tokens_fn=None):
+    def perform_interventions(self, datasets, verbose: bool = False, save_dir=None, include_actual_outputs: bool = False, target_variables_list=None, causal_model=None, checker=None):
         """
         Override to sort token positions based on first input before running interventions.
         """
@@ -122,7 +122,7 @@ class PatchResidualStream(InterventionExperiment):
                     self._token_positions_sorted = True
 
         # Call parent implementation
-        return super().perform_interventions(datasets, verbose, save_dir, include_actual_outputs, target_variables_list, causal_model, checker, get_correct_token_fn, get_other_choice_tokens_fn)
+        return super().perform_interventions(datasets, verbose, save_dir, include_actual_outputs, target_variables_list, causal_model, checker)
 
     def _sort_token_positions_by_first_input(self, token_positions: List[TokenPosition], sample_input: Dict) -> List[TokenPosition]:
         """

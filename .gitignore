@@ -8,6 +8,7 @@ build/
 content/
 results/
 logs/
+assets/
 
 run_baseline.sh
 

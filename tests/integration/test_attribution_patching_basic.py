@@ -1,7 +1,8 @@
 """
 Basic integration test for attribution patching.
 
-Tests that attribution patching runs end-to-end and produces valid scores.
+Tests that attribution patching runs end-to-end and produces valid scores
+using the 26-letter gradient method.
 """
 
 import pytest
@@ -23,6 +24,10 @@ class TestAttributionPatchingBasic:
     - 1 token position (instead of all positions)
     - 4 examples (instead of larger datasets)
     - Batch size 2 (for faster gradient computation)
+
+    The attribution patching uses 26 backward passes (one per letter A-Z)
+    to get consistent gradients across all examples, then approximates
+    post-intervention logits and takes argmax to determine the prediction.
     """
 
     def test_attribution_patching_runs(
@@ -30,7 +35,7 @@ class TestAttributionPatchingBasic:
     ):
         """Test that attribution patching runs without errors.
 
-        This is a minimal smoke test to verify the attribution patching
+        This is a minimal smoke test to verify the 26-letter attribution patching
         implementation works end-to-end with gradients and produces scores.
         """
         token_positions = list(MCQA_task.create_token_positions(pipeline).values())
@@ -52,40 +57,16 @@ class TestAttributionPatchingBasic:
 
         datasets = {"test": small_different_symbol_dataset}
 
-        # Define token extraction function
+        # Define token extraction function (used for ground truth correct answer)
         def get_correct_token(item):
             pos = get_answer_position(item['object_color'], item['choice0'], item['choice1'])
             return get_answer(pos, item['symbol0'], item['symbol1'])
 
-        # Define function to get other choice tokens
-        def get_other_choice_tokens(item):
-            """Return the token that is NOT the correct answer."""
-            pos = get_answer_position(item['object_color'], item['choice0'], item['choice1'])
-            correct = get_answer(pos, item['symbol0'], item['symbol1'])
-            # Return the other choice
-            if correct == item['symbol0']:
-                return [item['symbol1']]
-            else:
-                return [item['symbol0']]
-
-        # Define metric function for batched inputs
-        def metric_fn(logits, correct_token_ids, other_choice_token_ids):
-            # logits: (batch_size, seq_len, vocab_size)
-            # correct_token_ids: (batch_size,)
-            # other_choice_token_ids: (batch_size, n_choices)
-            last_logits = logits[:, -1, :]  # Get logits for last token
-
-            # Use checker's compute_score method directly (batched)
-            return CheapArgmaxChecker.compute_score(
-                last_logits, correct_token_ids, other_choice_token_ids
-            )
-
-        # Run attribution patching (FIXED: pass get_other_choice_tokens_fn)
+        # Run attribution patching with 26-letter gradient method
+        # No need for metric_fn or get_other_choice_tokens_fn anymore
         results = experiment.perform_attribution_patching(
             datasets,
-            metric_fn=metric_fn,
             get_correct_token_fn=get_correct_token,
-            get_other_choice_tokens_fn=get_other_choice_tokens,
             target_variables_list=[["answer"]],
             verbose=True
         )
@@ -102,7 +83,12 @@ class TestAttributionPatchingBasic:
         assert "average_score" in unit_result["answer"]
         assert isinstance(unit_result["answer"]["average_score"], float)
 
-        print("\n✓ Attribution patching completed successfully!")
+        # Verify the score is between 0 and 1 (it's a correctness score)
+        score = unit_result["answer"]["average_score"]
+        assert 0.0 <= score <= 1.0, f"Score {score} should be between 0 and 1"
+
+        print("\n✓ Attribution patching (26-letter method) completed successfully!")
         print(
             f"✓ Tested {len(results['dataset']['test']['model_unit'])} intervention locations"
         )
+        print(f"✓ Average score: {score:.4f}")

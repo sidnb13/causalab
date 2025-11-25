@@ -77,7 +77,12 @@ class ExactMatchChecker(Checker):
 
 
 class CheapArgmaxChecker(Checker):
-    """Checker that uses cheap_argmax for attribution patching correctness."""
+    """Checker that uses 26-letter argmax for attribution patching correctness.
+
+    This checker works with attribution patching that computes gradients for all
+    26 letters (A-Z) separately, then approximates post-intervention logits for
+    each letter and takes argmax to determine the predicted answer.
+    """
 
     def check_intervention(self, output_dict, expected_label) -> float:
         """Not supported - CheapArgmaxChecker is only for attribution patching."""
@@ -86,60 +91,52 @@ class CheapArgmaxChecker(Checker):
         )
 
     @staticmethod
-    def compute_score(
-        logits: torch.Tensor, correct: torch.Tensor, other_choices: torch.Tensor
-    ):
+    def check_attribution_26(
+        approx_logits_26: torch.Tensor,
+        correct_token_ids: torch.Tensor,
+        letter_token_ids: list,
+    ) -> torch.Tensor:
         """
-        Compute difference between correct choice logit and other choice logits.
+        Check if argmax of 26 approximated logits matches oracle (correct answer).
 
         Args:
-            logits: Logits tensor, shape [batch_size, vocab_size]
-            correct: Correct token index, shape [batch_size]
-            other_choices: Other choice token indices, shape [batch_size, n_choices]
+            approx_logits_26: [batch, 26] - approximated logits for letters A-Z
+            correct_token_ids: [batch] - ground truth correct token IDs
+            letter_token_ids: list of 26 token IDs for A-Z
 
         Returns:
-            tuple: (metric, sum_other_logits) where
-                - metric = logits[correct] - sum(logits[other_choices])
-                - sum_other_logits = sum(logits[other_choices])
+            [batch] tensor - 1.0 if prediction matches oracle, 0.0 otherwise
         """
-        # logits: [batch_size, vocab_size]
-        # correct: [batch_size]
-        # other_choices: [batch_size, n_choices]
+        # Get predicted letter index (0-25) based on argmax of approximated logits
+        pred_letter_idx = approx_logits_26.argmax(dim=-1)  # [batch]
 
-        # Note: removed assertion that argmax == correct because this method is used
-        # both for base runs (where it holds) and post-intervention runs (where it may not)
-        correct_logits = logits.gather(-1, correct.unsqueeze(-1)).squeeze(
-            -1
-        )  # [batch_size]
+        # Convert correct_token_ids to letter indices (0-25)
+        letter_id_to_idx = {tid: idx for idx, tid in enumerate(letter_token_ids)}
+        correct_letter_idx = torch.tensor([
+            letter_id_to_idx.get(cid.item(), -1) for cid in correct_token_ids
+        ], device=approx_logits_26.device)
 
-        # Gather all other choice logits: [batch_size, n_choices]
-        other_logits = logits.gather(-1, other_choices)
-        sum_other_logits = other_logits.sum(dim=-1)  # [batch_size]
-
-        # Return metric and sum of other logits
-        return other_logits.shape[-1] * correct_logits - sum_other_logits
-        
-        return correct_logits
+        return (pred_letter_idx == correct_letter_idx).float()
 
     @torch.no_grad()
-    def check_attribution(self, attribution_score, **kwargs) -> float:
+    def check_attribution(self, attribution_data: dict) -> torch.Tensor:
         """
-        Check if attribution score indicates correct prediction.
-        """
-        # breakpoint()
-        return (attribution_score > 0).float()
+        Check attribution patching correctness using 26-letter approximation.
 
-        logits = kwargs["logits"].clone()  # Don't modify the original
-        correct_index = kwargs["correct"]
-        # Replace the correct token's logit with the attribution score for each example
-        logits.scatter_(
-            1,
-            correct_index.long().unsqueeze(1),
-            attribution_score.unsqueeze(1),
+        Args:
+            attribution_data: dict containing:
+                - approx_logits_26: [n_samples, 26] approximated logits
+                - correct_token_ids: [n_samples] correct token IDs
+                - letter_token_ids: list of 26 token IDs for A-Z
+
+        Returns:
+            [n_samples] tensor - 1.0 if prediction matches oracle, 0.0 otherwise
+        """
+        return self.check_attribution_26(
+            attribution_data["approx_logits_26"],
+            attribution_data["correct_token_ids"],
+            attribution_data["letter_token_ids"],
         )
-        # Check if the correct token has highest logit for each example
-        predictions = torch.argmax(logits, dim=-1)
-        return (predictions == correct_index).float()
 
 
 def can_distinguish_with_dataset(
@@ -274,10 +271,11 @@ def compute_attribution_scores(
     pipeline=None,
 ) -> Dict:
     """
-    Compute attribution scores for target variables using checker.
+    Compute attribution scores for target variables using 26-letter checker.
 
-    Similar to compute_interchange_scores, but for attribution patching.
-    Uses the stored metric scores and inputs to evaluate correctness per target variable.
+    This function uses the 26-letter attribution patching format where we have
+    approximated logits for all 26 letters (A-Z). The checker takes argmax of
+    the 26 approximated logits to determine the predicted answer.
 
     IMPORTANT: This function checks whether the approximated intervened output matches
     the COUNTERFACTUAL answer (not the base answer). This is consistent with how
@@ -286,12 +284,12 @@ def compute_attribution_scores(
 
     Args:
         raw_results: Dictionary from perform_attribution_patching containing
-                    metric_scores and inputs for each example
+                    approx_logits_26 and other attribution data for each example
         causal_model: CausalModel used to generate expected outputs
         datasets: Dictionary mapping dataset names to CounterfactualDataset objects,
                  or single CounterfactualDataset (will be converted to dict)
         target_variables_list: List of target variable groups to evaluate
-        checker: Checker instance to evaluate correctness (should support is_intervention=False)
+        checker: CheapArgmaxChecker instance with check_attribution_26 method
         pipeline: Pipeline with tokenizer to convert counterfactual labels to token IDs
 
     Returns:
@@ -322,30 +320,18 @@ def compute_attribution_scores(
             if model_unit_data is None:
                 continue
 
-            # Get stored metric scores and inputs from attribution patching
+            # Get stored attribution data
             attribution_data = model_unit_data.get("attribution_data")
             if attribution_data is None or len(attribution_data) == 0:
                 continue
 
-            # Get the first unit's data (they all have the same inputs/approx scores)
+            # Get the first unit's data
             unit_data = attribution_data[0][0]
             inputs = unit_data.get("inputs", [])
-            approx_scores = unit_data.get("approx", None)
-            logits = unit_data.get("logits", [])
-            correct_token_ids = unit_data.get("correct_token_ids", [])
+            approx_logits_26 = unit_data.get("approx_logits_26", None)
+            letter_token_ids = unit_data.get("letter_token_ids", None)
 
-            # Fall back to metric_scores if approx not available (backward compatibility)
-            if approx_scores is None:
-                approx_scores = unit_data.get("metric_scores", [])
-
-            if not inputs:
-                continue
-
-            # Convert approx to list if it's a tensor
-            if isinstance(approx_scores, torch.Tensor):
-                approx_scores = approx_scores.cpu().tolist()
-
-            if not approx_scores:
+            if not inputs or approx_logits_26 is None or letter_token_ids is None:
                 continue
 
             # Evaluate for each target variable
@@ -361,40 +347,31 @@ def compute_attribution_scores(
                 assert len(labeled_data) == len(inputs), (
                     f"Length mismatch: {len(labeled_data)} vs {len(inputs)}"
                 )
-                assert len(labeled_data) == len(approx_scores), (
-                    f"Length mismatch: {len(labeled_data)} vs {len(approx_scores)}"
-                )
-
-                # Compute correctness scores using checker (batched)
-                # Convert to batched tensors
-                approx_tensor = (
-                    torch.tensor(approx_scores)
-                    if not isinstance(approx_scores, torch.Tensor)
-                    else approx_scores
-                )
-                logits_tensor = torch.stack(logits)
 
                 # Get COUNTERFACTUAL correct tokens (what the model should output after patching)
                 if pipeline is not None:
                     # Extract counterfactual labels and convert to token IDs
+                    # Add leading space for consistency with letter_token_ids (which also have spaces)
                     counterfactual_labels = [
                         example["label"] for example in labeled_data
                     ]
                     counterfactual_token_ids = [
-                        pipeline.tokenizer.encode(label, add_special_tokens=False)[0]
+                        pipeline.tokenizer.encode(" " + label, add_special_tokens=False)[-1]
                         for label in counterfactual_labels
                     ]
                     counterfactual_tensor = torch.tensor(counterfactual_token_ids)
                 else:
-                    # Fallback to base correct tokens (old behavior)
-                    counterfactual_tensor = torch.stack(correct_token_ids)
+                    raise ValueError("Pipeline required for 26-letter attribution patching")
 
-                # Call checker once with batched inputs
-                scores_tensor = checker(
-                    approx_tensor,
-                    is_intervention=False,
-                    logits=logits_tensor,
-                    correct=counterfactual_tensor,  # Check against counterfactual answer!
+                # Convert approx_logits_26 to tensor if needed
+                if isinstance(approx_logits_26, list):
+                    approx_logits_26 = torch.stack(approx_logits_26)
+
+                # Call checker with 26-letter format
+                scores_tensor = CheapArgmaxChecker.check_attribution_26(
+                    approx_logits_26,
+                    counterfactual_tensor,  # Check against counterfactual answer!
+                    letter_token_ids,
                 )
 
                 # Convert to list
@@ -404,12 +381,22 @@ def compute_attribution_scores(
                     else list(scores_tensor)
                 )
 
-                # Convert continuous approx scores to list
-                continuous_scores = (
-                    approx_tensor.cpu().tolist()
-                    if isinstance(approx_tensor, torch.Tensor)
-                    else list(approx_tensor)
-                )
+                # For continuous scores, use the delta for the correct letter
+                # (how much the approximation changed the correct logit)
+                delta_26 = unit_data.get("delta_26", None)
+                if delta_26 is not None:
+                    # Get the delta for the counterfactual correct letter per sample
+                    letter_id_to_idx = {tid: idx for idx, tid in enumerate(letter_token_ids)}
+                    cf_letter_indices = torch.tensor([
+                        letter_id_to_idx.get(cid.item(), 0) for cid in counterfactual_tensor
+                    ])
+                    if isinstance(delta_26, list):
+                        delta_26 = torch.stack(delta_26)
+                    continuous_scores = delta_26[
+                        torch.arange(len(cf_letter_indices)), cf_letter_indices
+                    ].cpu().tolist()
+                else:
+                    continuous_scores = [0.0] * len(scores)
 
                 # Store processed results (binary and continuous scores)
                 results["dataset"][dataset_name]["model_unit"][model_units_str][
@@ -513,7 +500,6 @@ def compute_interchange_scores(
             # Process and decode model outputs from batch dictionaries
             dumped_outputs = []
             flattened_outputs = []
-            flattened_continuous_scores = []  # Extract continuous scores if present
             for batch_dict in raw_outputs:
                 # Use the string field that's already in batch_dict
                 batch_strings = batch_dict["string"]
@@ -522,10 +508,6 @@ def compute_interchange_scores(
                     batch_strings = [batch_strings]
 
                 dumped_outputs.extend(batch_strings)
-
-                # Extract continuous scores (computed before top-k conversion)
-                if "continuous_scores" in batch_dict:
-                    flattened_continuous_scores.extend(batch_dict["continuous_scores"])
 
                 # Create individual output dicts for each example in the batch
                 for idx, decoded_str in enumerate(batch_strings):
@@ -575,21 +557,12 @@ def compute_interchange_scores(
                         score = score.item()
                     scores.append(float(score))
 
-                # Store processed results (binary and continuous scores)
-                result_dict = {
+                # Store processed results
+                results["dataset"][dataset_name]["model_unit"][model_units_str][
+                    target_variable_str
+                ] = {
                     "scores": scores,
                     "average_score": np.mean(scores),
                 }
-
-                # Add continuous scores if available
-                if flattened_continuous_scores:
-                    result_dict["continuous_scores"] = flattened_continuous_scores
-                    result_dict["average_continuous_score"] = np.mean(
-                        flattened_continuous_scores
-                    )
-
-                results["dataset"][dataset_name]["model_unit"][model_units_str][
-                    target_variable_str
-                ] = result_dict
 
     return results
