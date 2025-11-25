@@ -2,9 +2,8 @@
 
 import pytest
 import gc
-import weakref
 import torch
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from experiments.pyvene_core import _delete_intervenable_model
 

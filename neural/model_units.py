@@ -17,9 +17,8 @@ This file introduces:
 
 from typing import List, Union, Optional
 
-import pyvene as pv
 
-from neural.featurizers import Featurizer, SubspaceFeaturizer 
+from neural.featurizers import Featurizer 
 
 
 class ComponentIndexer:

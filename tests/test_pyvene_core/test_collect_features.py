@@ -1,10 +1,9 @@
 import pytest
 import torch
 from unittest.mock import MagicMock, patch
-from torch.utils.data import DataLoader
 
 from experiments.pyvene_core import _collect_features, _delete_intervenable_model
-from neural.model_units import AtomicModelUnit, Component
+from neural.model_units import AtomicModelUnit
 from neural.featurizers import Featurizer
 
 

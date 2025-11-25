@@ -224,7 +224,7 @@ def test_multiple_forward_executions():
         # Verify answer matches answer_position (if position is valid)
         if output['answer_position'] is not None:
             expected_symbol = input_sample[f"symbol{output['answer_position']}"]
-            assert output['answer'] == expected_symbol, f"Answer should match symbol at answer_position"
+            assert output['answer'] == expected_symbol, "Answer should match symbol at answer_position"
         else:
             assert output['answer'] is None, "Answer should be None when position is None"
 
@@ -253,8 +253,8 @@ def test_edge_case_duplicate_colors():
 
     output = model.run_forward(input_sample)
 
-    print(f"Object: snow is white")
-    print(f"Choices: white, white")
+    print("Object: snow is white")
+    print("Choices: white, white")
     print(f"Answer position: {output['answer_position']}")
     print(f"Answer: {output['answer']}")
 

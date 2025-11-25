@@ -6,7 +6,7 @@ It verifies that counterfactuals are generated correctly and can distinguish
 between causal variables.
 """
 
-from tasks.MCQA.causal_models import positional_causal_model, NUM_CHOICES, COLORS, ALPHABET
+from tasks.MCQA.causal_models import positional_causal_model, NUM_CHOICES
 from tasks.MCQA.counterfactuals import (
     sample_answerable_question,
     same_symbol_different_position,
@@ -97,7 +97,7 @@ def test_same_symbol_different_position():
         assert input_sample[f'symbol{pos}'] == counterfactual[f'symbol{new_pos}'], \
             "Symbols should be swapped"
 
-        print(f"  ✓ Symbols and choices swapped together, positions differ")
+        print("  ✓ Symbols and choices swapped together, positions differ")
 
     print("\n✓ All counterfactuals generated correctly")
     print("✓ Test 2 passed\n")
@@ -145,7 +145,7 @@ def test_different_symbol():
         assert input_output['answer'] != counter_output['answer'], \
             "Answer symbols should differ"
 
-        print(f"  ✓ Symbols different, choices and position same")
+        print("  ✓ Symbols different, choices and position same")
 
     print("\n✓ All counterfactuals generated correctly")
     print("✓ Test 3 passed\n")
@@ -213,7 +213,7 @@ def test_counterfactual_structure():
         assert "raw_input" in input_sample, "Input should have raw_input"
         assert "raw_input" in counterfactual, "Counterfactual should have raw_input"
 
-        print(f"  ✓ Structure correct")
+        print("  ✓ Structure correct")
 
     print("\n✓ Test 5 passed\n")
 

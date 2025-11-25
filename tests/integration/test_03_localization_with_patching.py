@@ -6,7 +6,6 @@ and localizing answer and answer_position variables.
 """
 
 import pytest
-import torch
 from tasks.MCQA.mcqa import MCQA_task
 from experiments.filter_experiment import FilterExperiment
 from experiments.LM_experiments.residual_stream_experiment import PatchResidualStream
@@ -118,7 +117,7 @@ class TestTokenPositions:
                 highlighted = token_pos.highlight_selected_token(example)
                 assert isinstance(highlighted, str)
                 assert "**" in highlighted  # Check that highlighting occurred
-            except (ValueError, KeyError, IndexError) as e:
+            except (ValueError, KeyError, IndexError):
                 # Some positions might not find their tokens in certain examples
                 # This can happen if symbols don't match between example and raw_input
                 # Skip this position but continue testing others

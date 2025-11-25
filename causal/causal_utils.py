@@ -106,9 +106,8 @@ class CheapArgmaxChecker(Checker):
         # correct: [batch_size]
         # other_choices: [batch_size, n_choices]
 
-        assert (logits.argmax(-1) == correct).all(), (
-            f"Logits don't argmax to correct tokens. This means the model isn't predicting correctly on the base run."
-        )
+        # Note: removed assertion that argmax == correct because this method is used
+        # both for base runs (where it holds) and post-intervention runs (where it may not)
         correct_logits = logits.gather(-1, correct.unsqueeze(-1)).squeeze(
             -1
         )  # [batch_size]
@@ -118,18 +117,29 @@ class CheapArgmaxChecker(Checker):
         sum_other_logits = other_logits.sum(dim=-1)  # [batch_size]
 
         # Return metric and sum of other logits
-        return (other_logits.shape[
-            -1
-        ] * correct_logits - sum_other_logits), sum_other_logits
+        return other_logits.shape[-1] * correct_logits - sum_other_logits
+        
+        return correct_logits
 
     @torch.no_grad()
     def check_attribution(self, attribution_score, **kwargs) -> float:
         """
         Check if attribution score indicates correct prediction.
-        Returns:
-            Tensor of shape [batch_size] with 1.0 where argmax(patched_logits) == correct, 0.0 otherwise
         """
+        # breakpoint()
         return (attribution_score > 0).float()
+
+        logits = kwargs["logits"].clone()  # Don't modify the original
+        correct_index = kwargs["correct"]
+        # Replace the correct token's logit with the attribution score for each example
+        logits.scatter_(
+            1,
+            correct_index.long().unsqueeze(1),
+            attribution_score.unsqueeze(1),
+        )
+        # Check if the correct token has highest logit for each example
+        predictions = torch.argmax(logits, dim=-1)
+        return (predictions == correct_index).float()
 
 
 def can_distinguish_with_dataset(
@@ -394,10 +404,22 @@ def compute_attribution_scores(
                     else list(scores_tensor)
                 )
 
-                # Store processed results
+                # Convert continuous approx scores to list
+                continuous_scores = (
+                    approx_tensor.cpu().tolist()
+                    if isinstance(approx_tensor, torch.Tensor)
+                    else list(approx_tensor)
+                )
+
+                # Store processed results (binary and continuous scores)
                 results["dataset"][dataset_name]["model_unit"][model_units_str][
                     target_variable_str
-                ] = {"scores": scores, "average_score": np.mean(scores)}
+                ] = {
+                    "scores": scores,
+                    "average_score": np.mean(scores),
+                    "continuous_scores": continuous_scores,
+                    "average_continuous_score": np.mean(continuous_scores),
+                }
 
     return results
 
@@ -491,6 +513,7 @@ def compute_interchange_scores(
             # Process and decode model outputs from batch dictionaries
             dumped_outputs = []
             flattened_outputs = []
+            flattened_continuous_scores = []  # Extract continuous scores if present
             for batch_dict in raw_outputs:
                 # Use the string field that's already in batch_dict
                 batch_strings = batch_dict["string"]
@@ -499,6 +522,11 @@ def compute_interchange_scores(
                     batch_strings = [batch_strings]
 
                 dumped_outputs.extend(batch_strings)
+
+                # Extract continuous scores (computed before top-k conversion)
+                if "continuous_scores" in batch_dict:
+                    flattened_continuous_scores.extend(batch_dict["continuous_scores"])
+
                 # Create individual output dicts for each example in the batch
                 for idx, decoded_str in enumerate(batch_strings):
                     example_dict = {"sequences": batch_dict["sequences"][idx : idx + 1]}
@@ -547,9 +575,21 @@ def compute_interchange_scores(
                         score = score.item()
                     scores.append(float(score))
 
-                # Store processed results in the same structure as perform_interventions
+                # Store processed results (binary and continuous scores)
+                result_dict = {
+                    "scores": scores,
+                    "average_score": np.mean(scores),
+                }
+
+                # Add continuous scores if available
+                if flattened_continuous_scores:
+                    result_dict["continuous_scores"] = flattened_continuous_scores
+                    result_dict["average_continuous_score"] = np.mean(
+                        flattened_continuous_scores
+                    )
+
                 results["dataset"][dataset_name]["model_unit"][model_units_str][
                     target_variable_str
-                ] = {"scores": scores, "average_score": np.mean(scores)}
+                ] = result_dict
 
     return results

@@ -512,7 +512,7 @@ def _run_attribution_patching(
 
     # Initialize container for collected features: one list per model unit group
     data = [
-        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "sum_other_logits": [], "inputs": [], "logits": [], "correct_token_ids": [], "other_choice_token_ids": []} for _ in range(len(model_units))]
+        [{"base": [], "cf": [], "grad": [], "metric_scores": [], "inputs": [], "logits": [], "correct_token_ids": [], "other_choice_token_ids": []} for _ in range(len(model_units))]
         for model_units in model_units_list
     ]
 
@@ -600,10 +600,12 @@ def _run_attribution_patching(
                 other_choice_token_ids = torch.tensor(other_choice_token_ids, device=logits.device)
 
             # Compute metric scores for each example (for later evaluation)
-            # metric_fn now returns (metric_scores, sum_other_logits)
-            metric_scores, sum_other_logits = metric_fn(logits, correct_token_ids, other_choice_token_ids)
+            metric_scores = metric_fn(logits, correct_token_ids, other_choice_token_ids)
 
-            loss = metric_scores.mean()
+            # Use .sum() not .mean() to get correct per-sample gradients
+            # With .mean(), gradients are scaled by 1/batch_size, making the
+            # linear approximation incorrect by that factor
+            loss = metric_scores.sum()
             loss.backward()
 
             # Extract last token logits for checker (same shape as metric computation)
@@ -615,7 +617,6 @@ def _run_attribution_patching(
                 for j in range(len(model_units_list[i])):
                     data[i][j]["inputs"].extend(batch['input'])
                     data[i][j]["metric_scores"].extend(metric_scores.detach().cpu().tolist())
-                    data[i][j]["sum_other_logits"].extend(sum_other_logits.detach().cpu().tolist())
                     # Store per-example logits and correct token IDs for checker
                     data[i][j]["logits"].extend(last_logits)
                     data[i][j]["correct_token_ids"].extend(correct_token_ids.cpu())
@@ -653,7 +654,6 @@ def _run_attribution_patching(
                 "grad": torch.stack(datum["grad"]),
                 "inputs": datum["inputs"],  # Preserve inputs
                 "metric_scores": datum["metric_scores"],  # Preserve metric_scores
-                "sum_other_logits": datum["sum_other_logits"],  # Preserve sum of other choice logits
                 "logits": datum["logits"],  # Preserve logits for checker
                 "correct_token_ids": datum["correct_token_ids"],  # Preserve correct token IDs for checker
                 "other_choice_token_ids": datum["other_choice_token_ids"],  # Preserve other choice token IDs for checker

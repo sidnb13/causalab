@@ -4,7 +4,6 @@ Basic integration test for attribution patching.
 Tests that attribution patching runs end-to-end and produces valid scores.
 """
 
-import numpy as np
 import pytest
 import torch
 
@@ -69,28 +68,17 @@ class TestAttributionPatchingBasic:
             else:
                 return [item['symbol0']]
 
-        # Define metric function for batched inputs (FIXED: now accepts other_choice_token_ids)
+        # Define metric function for batched inputs
         def metric_fn(logits, correct_token_ids, other_choice_token_ids):
             # logits: (batch_size, seq_len, vocab_size)
             # correct_token_ids: (batch_size,)
             # other_choice_token_ids: (batch_size, n_choices)
             last_logits = logits[:, -1, :]  # Get logits for last token
 
-            # compute_score now returns (metric, sum_other_logits)
-            results = [
-                CheapArgmaxChecker.compute_score(
-                    last_logits[i],
-                    correct_token_ids[i],
-                    other_choice_token_ids[i]
-                )
-                for i in range(len(correct_token_ids))
-            ]
-
-            # Unpack metrics and sum_other_logits
-            metrics = torch.stack([r[0] for r in results])
-            sum_other_logits = torch.stack([r[1] for r in results])
-
-            return metrics, sum_other_logits
+            # Use checker's compute_score method directly (batched)
+            return CheapArgmaxChecker.compute_score(
+                last_logits, correct_token_ids, other_choice_token_ids
+            )
 
         # Run attribution patching (FIXED: pass get_other_choice_tokens_fn)
         results = experiment.perform_attribution_patching(
@@ -114,7 +102,7 @@ class TestAttributionPatchingBasic:
         assert "average_score" in unit_result["answer"]
         assert isinstance(unit_result["answer"]["average_score"], float)
 
-        print(f"\n✓ Attribution patching completed successfully!")
+        print("\n✓ Attribution patching completed successfully!")
         print(
             f"✓ Tested {len(results['dataset']['test']['model_unit'])} intervention locations"
         )

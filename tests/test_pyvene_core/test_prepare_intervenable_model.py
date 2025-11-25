@@ -1,11 +1,9 @@
 # tests/test_pyvene_core/test_prepare_intervenable_model_integration.py
 
 import pytest
-import torch
 from unittest.mock import MagicMock, patch
 
 from experiments.pyvene_core import _prepare_intervenable_model
-from neural.model_units import AtomicModelUnit, Component, StaticComponent
 from neural.LM_units import ResidualStream
 
 

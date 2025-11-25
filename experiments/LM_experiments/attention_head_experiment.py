@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 from typing import List, Dict, Callable, Tuple, Optional
 
@@ -8,9 +6,7 @@ from experiments.intervention_experiment import *
 from neural.LM_units import *
 from neural.model_units import *
 from neural.pipeline import LMPipeline
-from causal.causal_model import CausalModel
 
-from experiments.pyvene_core import _prepare_intervenable_inputs
 
 from .LM_utils import LM_loss_and_metric_fn
 from experiments.visualizations import create_heatmap, create_binary_mask_heatmap
@@ -635,7 +631,7 @@ class PatchAttentionHeads(InterventionExperiment):
             # Build output text
             output_lines = []
             output_lines.append("=" * 80)
-            output_lines.append(f"DBM ATTENTION HEAD MASK ANALYSIS")
+            output_lines.append("DBM ATTENTION HEAD MASK ANALYSIS")
             output_lines.append("=" * 80)
             output_lines.append(f"Experiment: {results.get('experiment_id', 'Unknown Experiment')}")
             output_lines.append(f"Method: {results.get('method_name', 'Unknown Experiment')}")

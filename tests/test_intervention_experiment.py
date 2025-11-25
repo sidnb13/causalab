@@ -9,13 +9,11 @@ import pytest
 import torch
 import numpy as np
 from unittest.mock import Mock, patch
-from typing import Dict, List, Any
 
 from experiments.intervention_experiment import InterventionExperiment
 from neural.pipeline import Pipeline
 from neural.model_units import AtomicModelUnit
 from causal.causal_model import CausalModel
-from causal.counterfactual_dataset import CounterfactualDataset
 
 
 # Shared fixtures as standalone functions
@@ -796,7 +794,6 @@ class TestSerialization:
         # Verify values match
         assert serialized[0]["sequences"] == [[1, 2, 3]]
         # Use approximate comparison for floats
-        import numpy as np
         np.testing.assert_allclose(serialized[0]["scores"][0]["top_k_logits"], [[0.9, 0.8, 0.7]], rtol=1e-5)
         assert serialized[0]["scores"][0]["top_k_indices"] == [[10, 20, 30]]
         assert serialized[0]["scores"][0]["top_k_tokens"] == [["a", "b", "c"]]

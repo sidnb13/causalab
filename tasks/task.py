@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, Callable
-from causal.causal_model import CounterfactualDataset
+from causal.counterfactual_dataset import CounterfactualDataset
 
 
 @dataclass

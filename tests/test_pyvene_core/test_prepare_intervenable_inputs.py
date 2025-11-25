@@ -1,13 +1,11 @@
 # tests/test_pyvene_core/test_prepare_intervenable_inputs.py
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 import torch
-import numpy as np
 
 from experiments.pyvene_core import _prepare_intervenable_inputs
-from neural.model_units import AtomicModelUnit, StaticComponent, Component
-from neural.LM_units import ResidualStream
+from neural.model_units import AtomicModelUnit
 
 
 class TestPrepareIntervenableInputs:

@@ -2,10 +2,9 @@
 
 import pytest
 import torch
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-from experiments.pyvene_core import _batched_interchange_intervention, _prepare_intervenable_inputs
-from neural.model_units import AtomicModelUnit
+from experiments.pyvene_core import _batched_interchange_intervention
 
 
 class TestBatchedInterchangeIntervention:

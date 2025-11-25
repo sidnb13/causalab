@@ -9,7 +9,7 @@ This test suite verifies that:
 """
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from neural.model_units import ComponentIndexer, Component, AtomicModelUnit
 from neural.LM_units import TokenPosition
 from neural.featurizers import Featurizer

@@ -41,7 +41,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-print(f"Running with options:")
+print("Running with options:")
 print(f"  - Skip activation patching: {args.skip_activation}")
 print(f"  - Number of examples: {args.num_examples}")
 
@@ -77,8 +77,17 @@ results_dir_patching = os.path.join(
 results_dir_attribution = os.path.join(
     script_dir, "comparison_results/attribution_patching"
 )
+# Separate directories for continuous score heatmaps
+results_dir_patching_continuous = os.path.join(
+    script_dir, "comparison_results/activation_patching_continuous"
+)
+results_dir_attribution_continuous = os.path.join(
+    script_dir, "comparison_results/attribution_patching_continuous"
+)
 os.makedirs(results_dir_patching, exist_ok=True)
 os.makedirs(results_dir_attribution, exist_ok=True)
+os.makedirs(results_dir_patching_continuous, exist_ok=True)
+os.makedirs(results_dir_attribution_continuous, exist_ok=True)
 
 # Create datasets
 counterfactual_datasets = MCQA_task.create_datasets(args.num_examples)
@@ -124,73 +133,7 @@ experiment = PatchResidualStream(
     config=config,
 )
 
-# ==============================================================================
-# METHOD 1: REGULAR ACTIVATION PATCHING
-# ==============================================================================
-if not args.skip_activation:
-    start_time = time.time()
-
-    patching_results = experiment.perform_interventions(
-        filtered_datasets, verbose=True, target_variables_list=target_variables_list
-    )
-
-    patching_time = time.time() - start_time
-
-    # Generate activation patching visualizations
-
-    # Different Symbol
-    if "different_symbol" in filtered_datasets:
-        diff_results_patching = copy.deepcopy(patching_results)
-        if "same_symbol_different_position" in diff_results_patching["dataset"]:
-            del diff_results_patching["dataset"]["same_symbol_different_position"]
-        if "random_counterfactual" in diff_results_patching["dataset"]:
-            del diff_results_patching["dataset"]["random_counterfactual"]
-        experiment.plot_heatmaps(
-            diff_results_patching, ["answer"], save_path=results_dir_patching
-        )
-        experiment.plot_heatmaps(
-            diff_results_patching, ["answer_position"], save_path=results_dir_patching
-        )
-
-    # Same Symbol Different Position
-    if "same_symbol_different_position" in filtered_datasets:
-        same_diff_results_patching = copy.deepcopy(patching_results)
-        if "different_symbol" in same_diff_results_patching["dataset"]:
-            del same_diff_results_patching["dataset"]["different_symbol"]
-        if "random_counterfactual" in same_diff_results_patching["dataset"]:
-            del same_diff_results_patching["dataset"]["random_counterfactual"]
-        experiment.plot_heatmaps(
-            same_diff_results_patching,
-            ["answer_position"],
-            save_path=results_dir_patching,
-        )
-        experiment.plot_heatmaps(
-            same_diff_results_patching, ["answer"], save_path=results_dir_patching
-        )
-
-    # Random
-    if "random_counterfactual" in filtered_datasets:
-        random_results_patching = copy.deepcopy(patching_results)
-        if "different_symbol" in random_results_patching["dataset"]:
-            del random_results_patching["dataset"]["different_symbol"]
-        if "same_symbol_different_position" in random_results_patching["dataset"]:
-            del random_results_patching["dataset"]["same_symbol_different_position"]
-        experiment.plot_heatmaps(
-            random_results_patching, ["answer_position"], save_path=results_dir_patching
-        )
-        experiment.plot_heatmaps(
-            random_results_patching, ["answer"], save_path=results_dir_patching
-        )
-else:
-    print("Skipping activation patching (--skip-activation flag set)")
-    patching_time = 0
-
-# ==============================================================================
-# METHOD 2: ATTRIBUTION PATCHING
-# ==============================================================================
-
-
-# Define token extraction function
+# Define token extraction functions (used by both methods)
 def get_correct_token(item):
     pos = get_answer_position(item["object_color"], item["choice0"], item["choice1"])
     answer = get_answer(pos, item["symbol0"], item["symbol1"])
@@ -198,7 +141,6 @@ def get_correct_token(item):
     return " " + answer if answer else None
 
 
-# Define function to get other choice tokens (for fixed attribution patching)
 def get_other_choice_tokens(item):
     """Return the token that is NOT the correct answer."""
     pos = get_answer_position(item["object_color"], item["choice0"], item["choice1"])
@@ -210,19 +152,110 @@ def get_other_choice_tokens(item):
         return [" " + item["symbol0"]]
 
 
-# Define metric function for batched inputs (FIXED: now requires other_choice_token_ids)
+# ==============================================================================
+# METHOD 1: REGULAR ACTIVATION PATCHING
+# ==============================================================================
+if not args.skip_activation:
+    start_time = time.time()
+
+    patching_results = experiment.perform_interventions(
+        filtered_datasets, verbose=True, target_variables_list=target_variables_list,
+        get_correct_token_fn=get_correct_token, get_other_choice_tokens_fn=get_other_choice_tokens
+    )
+
+    patching_time = time.time() - start_time
+
+    # Generate activation patching visualizations (accuracy and continuous scores)
+
+    # Different Symbol
+    if "different_symbol" in filtered_datasets:
+        diff_results_patching = copy.deepcopy(patching_results)
+        if "same_symbol_different_position" in diff_results_patching["dataset"]:
+            del diff_results_patching["dataset"]["same_symbol_different_position"]
+        if "random_counterfactual" in diff_results_patching["dataset"]:
+            del diff_results_patching["dataset"]["random_counterfactual"]
+        # Accuracy heatmaps
+        experiment.plot_heatmaps(
+            diff_results_patching, ["answer"], save_path=results_dir_patching
+        )
+        experiment.plot_heatmaps(
+            diff_results_patching, ["answer_position"], save_path=results_dir_patching
+        )
+        # Continuous score heatmaps
+        experiment.plot_heatmaps(
+            diff_results_patching, ["answer"], save_path=results_dir_patching_continuous, score_type="continuous"
+        )
+        experiment.plot_heatmaps(
+            diff_results_patching, ["answer_position"], save_path=results_dir_patching_continuous, score_type="continuous"
+        )
+
+    # Same Symbol Different Position
+    if "same_symbol_different_position" in filtered_datasets:
+        same_diff_results_patching = copy.deepcopy(patching_results)
+        if "different_symbol" in same_diff_results_patching["dataset"]:
+            del same_diff_results_patching["dataset"]["different_symbol"]
+        if "random_counterfactual" in same_diff_results_patching["dataset"]:
+            del same_diff_results_patching["dataset"]["random_counterfactual"]
+        # Accuracy heatmaps
+        experiment.plot_heatmaps(
+            same_diff_results_patching,
+            ["answer_position"],
+            save_path=results_dir_patching,
+        )
+        experiment.plot_heatmaps(
+            same_diff_results_patching, ["answer"], save_path=results_dir_patching
+        )
+        # Continuous score heatmaps
+        experiment.plot_heatmaps(
+            same_diff_results_patching, ["answer_position"], save_path=results_dir_patching_continuous, score_type="continuous"
+        )
+        experiment.plot_heatmaps(
+            same_diff_results_patching, ["answer"], save_path=results_dir_patching_continuous, score_type="continuous"
+        )
+
+    # Random
+    if "random_counterfactual" in filtered_datasets:
+        random_results_patching = copy.deepcopy(patching_results)
+        if "different_symbol" in random_results_patching["dataset"]:
+            del random_results_patching["dataset"]["different_symbol"]
+        if "same_symbol_different_position" in random_results_patching["dataset"]:
+            del random_results_patching["dataset"]["same_symbol_different_position"]
+        # Accuracy heatmaps
+        experiment.plot_heatmaps(
+            random_results_patching, ["answer_position"], save_path=results_dir_patching
+        )
+        experiment.plot_heatmaps(
+            random_results_patching, ["answer"], save_path=results_dir_patching
+        )
+        # Continuous score heatmaps
+        experiment.plot_heatmaps(
+            random_results_patching, ["answer_position"], save_path=results_dir_patching_continuous, score_type="continuous"
+        )
+        experiment.plot_heatmaps(
+            random_results_patching, ["answer"], save_path=results_dir_patching_continuous, score_type="continuous"
+        )
+else:
+    print("Skipping activation patching (--skip-activation flag set)")
+    patching_time = 0
+
+# ==============================================================================
+# METHOD 2: ATTRIBUTION PATCHING
+# ==============================================================================
+
+
+# Define metric function for batched inputs
 def metric_fn(logits, correct_token_ids, other_choice_token_ids):
     # logits: (batch_size, seq_len, vocab_size)
     # correct_token_ids: (batch_size,)
     # other_choice_token_ids: (batch_size, n_choices)
     last_logits = logits[:, -1, :]  # Get logits for last token
 
-    # compute_score takes batched inputs and returns (metrics, sum_other_logits)
-    metrics, sum_other_logits = CheapArgmaxChecker.compute_score(
+    # compute_score takes batched inputs and returns metrics
+    metrics = CheapArgmaxChecker.compute_score(
         last_logits, correct_token_ids, other_choice_token_ids
     )
 
-    return metrics, sum_other_logits
+    return metrics
 
 
 start_time = time.time()
@@ -244,7 +277,7 @@ experiment.checker = intervention_checker
 
 attribution_time = time.time() - start_time
 
-# Generate attribution patching visualizations
+# Generate attribution patching visualizations (accuracy and continuous scores)
 
 # Different Symbol
 if "different_symbol" in filtered_datasets:
@@ -253,11 +286,19 @@ if "different_symbol" in filtered_datasets:
         del diff_results_attribution["dataset"]["same_symbol_different_position"]
     if "random_counterfactual" in diff_results_attribution["dataset"]:
         del diff_results_attribution["dataset"]["random_counterfactual"]
+    # Accuracy heatmaps
     experiment.plot_heatmaps(
         diff_results_attribution, ["answer"], save_path=results_dir_attribution
     )
     experiment.plot_heatmaps(
         diff_results_attribution, ["answer_position"], save_path=results_dir_attribution
+    )
+    # Continuous score heatmaps
+    experiment.plot_heatmaps(
+        diff_results_attribution, ["answer"], save_path=results_dir_attribution_continuous, score_type="continuous"
+    )
+    experiment.plot_heatmaps(
+        diff_results_attribution, ["answer_position"], save_path=results_dir_attribution_continuous, score_type="continuous"
     )
 
 # Same Symbol Different Position
@@ -267,6 +308,7 @@ if "same_symbol_different_position" in filtered_datasets:
         del same_diff_results_attribution["dataset"]["different_symbol"]
     if "random_counterfactual" in same_diff_results_attribution["dataset"]:
         del same_diff_results_attribution["dataset"]["random_counterfactual"]
+    # Accuracy heatmaps
     experiment.plot_heatmaps(
         same_diff_results_attribution,
         ["answer_position"],
@@ -274,6 +316,13 @@ if "same_symbol_different_position" in filtered_datasets:
     )
     experiment.plot_heatmaps(
         same_diff_results_attribution, ["answer"], save_path=results_dir_attribution
+    )
+    # Continuous score heatmaps
+    experiment.plot_heatmaps(
+        same_diff_results_attribution, ["answer_position"], save_path=results_dir_attribution_continuous, score_type="continuous"
+    )
+    experiment.plot_heatmaps(
+        same_diff_results_attribution, ["answer"], save_path=results_dir_attribution_continuous, score_type="continuous"
     )
 
 # Random
@@ -283,6 +332,7 @@ if "random_counterfactual" in filtered_datasets:
         del random_results_attribution["dataset"]["different_symbol"]
     if "same_symbol_different_position" in random_results_attribution["dataset"]:
         del random_results_attribution["dataset"]["same_symbol_different_position"]
+    # Accuracy heatmaps
     experiment.plot_heatmaps(
         random_results_attribution,
         ["answer_position"],
@@ -290,6 +340,13 @@ if "random_counterfactual" in filtered_datasets:
     )
     experiment.plot_heatmaps(
         random_results_attribution, ["answer"], save_path=results_dir_attribution
+    )
+    # Continuous score heatmaps
+    experiment.plot_heatmaps(
+        random_results_attribution, ["answer_position"], save_path=results_dir_attribution_continuous, score_type="continuous"
+    )
+    experiment.plot_heatmaps(
+        random_results_attribution, ["answer"], save_path=results_dir_attribution_continuous, score_type="continuous"
     )
 
 print("\nExecution times:")

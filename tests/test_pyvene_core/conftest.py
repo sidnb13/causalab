@@ -3,9 +3,7 @@
 import pytest
 import torch
 import random
-import numpy as np
-from collections import defaultdict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from causal.causal_model import CausalModel
 from causal.counterfactual_dataset import CounterfactualDataset

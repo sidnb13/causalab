@@ -1,8 +1,6 @@
 # tests/test_experiments/test_intervention_experiment.py
 import os
-import json
 import torch
-import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch, call, ANY
 

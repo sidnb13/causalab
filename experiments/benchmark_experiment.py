@@ -13,7 +13,7 @@ Key components:
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Any
 import os
 
 from experiments.experiment_utils import clear_memory, ensure_dir, generate_model_dir_name

@@ -4,13 +4,11 @@ import pytest
 import torch
 import random
 import numpy as np
-from collections import defaultdict
 
 from causal.causal_model import CausalModel
 from causal.counterfactual_dataset import CounterfactualDataset
 from neural.pipeline import LMPipeline
 from neural.LM_units import TokenPosition, ResidualStream
-from neural.model_units import AtomicModelUnit
 
 
 @pytest.fixture(scope="session")
@@ -95,7 +93,7 @@ def mcqa_causal_model():
         output = f"Question: The {input_data['question'][1]} is {input_data['question'][0]}. What color is the {input_data['question'][1]}?"
         for i in range(NUM_CHOICES):
             output += f"\n{input_data[f'symbol{i}']}. {input_data[f'choice{i}']}"
-        output += f"\nAnswer:"
+        output += "\nAnswer:"
         return output
     
     def output_dumper(setting):

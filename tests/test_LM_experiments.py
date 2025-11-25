@@ -1,8 +1,7 @@
 import pytest
 import torch
 import numpy as np
-import os
-from unittest.mock import MagicMock, patch, PropertyMock, ANY
+from unittest.mock import MagicMock, patch
 
 from experiments.LM_experiments.LM_utils import (
     LM_loss_and_metric_fn,

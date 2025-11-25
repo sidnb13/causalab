@@ -2,14 +2,9 @@
 
 import pytest
 import torch
-from unittest.mock import MagicMock, patch, call, ANY  # Added ANY import
+from unittest.mock import MagicMock, patch, ANY  # Added ANY import
 
-from experiments.pyvene_core import (_run_interchange_interventions, 
-                                    _prepare_intervenable_model, 
-                                    _batched_interchange_intervention,
-                                    _delete_intervenable_model)
-from neural.model_units import AtomicModelUnit
-from causal.counterfactual_dataset import CounterfactualDataset
+from experiments.pyvene_core import (_run_interchange_interventions)
 
 
 class TestRunInterchangeInterventions:

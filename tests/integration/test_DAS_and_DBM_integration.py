@@ -11,16 +11,15 @@ This test is modeled after the 04_train_DAS_and_DBM.ipynb notebook and verifies:
 
 import pytest
 import torch
-from unittest.mock import MagicMock, patch, PropertyMock
-import numpy as np
+from unittest.mock import MagicMock, patch
 
-from tasks.MCQA.mcqa import MCQA_task, sample_answerable_question
+from tasks.MCQA.mcqa import MCQA_task
 from neural.pipeline import LMPipeline
 from causal.counterfactual_dataset import CounterfactualDataset
 from experiments.filter_experiment import FilterExperiment
 from experiments.LM_experiments.residual_stream_experiment import PatchResidualStream
 from experiments.LM_experiments.attention_head_experiment import PatchAttentionHeads
-from neural.LM_units import TokenPosition, get_all_tokens
+from neural.LM_units import TokenPosition
 
 
 # ---------------------- Fixtures ---------------------- #

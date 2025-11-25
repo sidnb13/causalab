@@ -1,19 +1,13 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import seaborn as sns
 from typing import List, Dict, Callable, Tuple, Optional, Union, Any
 import os
 import gc
 import torch
-import logging
 from collections import Counter
 
 from .LM_utils import LM_loss_and_metric_fn
-from experiments.visualizations import create_heatmap, create_text_output_grid, print_text_heatmap
+from experiments.visualizations import create_heatmap, create_text_output_grid
 from experiments.intervention_experiment import *
-from causal.causal_model import CausalModel
-from causal.causal_utils import compute_interchange_scores
 from neural.LM_units import *
 from neural.model_units import *
 from neural.featurizers import *
@@ -111,7 +105,7 @@ class PatchResidualStream(InterventionExperiment):
         self.token_positions = token_positions
         self._token_positions_sorted = False  # Track if we've sorted yet
 
-    def perform_interventions(self, datasets, verbose: bool = False, save_dir=None, include_actual_outputs: bool = False, target_variables_list=None, causal_model=None, checker=None):
+    def perform_interventions(self, datasets, verbose: bool = False, save_dir=None, include_actual_outputs: bool = False, target_variables_list=None, causal_model=None, checker=None, get_correct_token_fn=None, get_other_choice_tokens_fn=None):
         """
         Override to sort token positions based on first input before running interventions.
         """
@@ -128,7 +122,7 @@ class PatchResidualStream(InterventionExperiment):
                     self._token_positions_sorted = True
 
         # Call parent implementation
-        return super().perform_interventions(datasets, verbose, save_dir, include_actual_outputs, target_variables_list, causal_model, checker)
+        return super().perform_interventions(datasets, verbose, save_dir, include_actual_outputs, target_variables_list, causal_model, checker, get_correct_token_fn, get_other_choice_tokens_fn)
 
     def _sort_token_positions_by_first_input(self, token_positions: List[TokenPosition], sample_input: Dict) -> List[TokenPosition]:
         """
@@ -195,7 +189,7 @@ class PatchResidualStream(InterventionExperiment):
                             del sae
                             self._clean_memory()
                             
-                        except Exception as e:
+                        except Exception:
                             # Continue with next unit rather than failing the entire experiment
                             continue
                             
@@ -215,7 +209,7 @@ class PatchResidualStream(InterventionExperiment):
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
-    def plot_heatmaps(self, results: Dict, target_variables, save_path: str = None, average_counterfactuals: bool = False):
+    def plot_heatmaps(self, results: Dict, target_variables, save_path: str = None, average_counterfactuals: bool = False, score_type: str = "accuracy"):
         """
         Generate heatmaps visualizing intervention scores across layers and positions.
 
@@ -224,6 +218,7 @@ class PatchResidualStream(InterventionExperiment):
             target_variables: List of variable names being analyzed
             save_path: Optional path to save the generated plots. If None, displays plots interactively.
             average_counterfactuals: If True, averages scores across counterfactual datasets
+            score_type: "accuracy" for binary accuracy (default), "continuous" for raw attribution scores
         """
         target_variables_str = "-".join(target_variables)
 
@@ -234,9 +229,9 @@ class PatchResidualStream(InterventionExperiment):
         is_attribution = results.get("method_name") == "attribution_patching"
 
         if average_counterfactuals:
-            self._plot_average_heatmap(results, layers, token_ids, target_variables_str, save_path, is_attribution)
+            self._plot_average_heatmap(results, layers, token_ids, target_variables_str, save_path, is_attribution, score_type)
         else:
-            self._plot_individual_heatmaps(results, layers, token_ids, target_variables_str, save_path, is_attribution)
+            self._plot_individual_heatmaps(results, layers, token_ids, target_variables_str, save_path, is_attribution, score_type)
 
     @staticmethod
     def plot_heatmaps_from_results(results: Dict, target_variables: List[str],
@@ -285,7 +280,8 @@ class PatchResidualStream(InterventionExperiment):
                             layers: List,
                             positions: List,
                             target_variables_str: str,
-                            dataset_names: Optional[List[str]] = None) -> Dict[str, np.ndarray]:
+                            dataset_names: Optional[List[str]] = None,
+                            score_key: str = "average_score") -> Dict[str, np.ndarray]:
         """
         Extract score matrices from results for specified datasets.
 
@@ -295,6 +291,7 @@ class PatchResidualStream(InterventionExperiment):
             positions: List of position IDs
             target_variables_str: String identifier for target variables
             dataset_names: List of dataset names to process. If None, processes all datasets.
+            score_key: Key to extract from results ("average_score" or "average_continuous_score")
 
         Returns:
             Dictionary mapping dataset names to their score matrices
@@ -313,10 +310,10 @@ class PatchResidualStream(InterventionExperiment):
                 for j, pos in enumerate(positions):
                     for unit_str, unit_data in results["dataset"][dataset_name]["model_unit"].items():
                         if "metadata" in unit_data and target_variables_str in unit_data:
-                            if "average_score" in unit_data[target_variables_str]:
+                            if score_key in unit_data[target_variables_str]:
                                 metadata = unit_data["metadata"]
                                 if metadata.get("layer") == layer and metadata.get("position") == pos:
-                                    score_matrix[i, j] = unit_data[target_variables_str]["average_score"]
+                                    score_matrix[i, j] = unit_data[target_variables_str][score_key]
                                     valid_entries = True
 
             # Only include datasets with valid entries
@@ -358,10 +355,13 @@ class PatchResidualStream(InterventionExperiment):
             raise ValueError(f"Unsupported aggregation method: {aggregation}")
 
     def _plot_average_heatmap(self, results: Dict, layers: List, positions: List,
-                             target_variables_str: str, save_path: Optional[str] = None, is_attribution: bool = False):
+                             target_variables_str: str, save_path: Optional[str] = None, is_attribution: bool = False, score_type: str = "accuracy"):
         """Create and save/display an averaged heatmap across all datasets."""
+        # Determine score key based on score_type
+        score_key = "average_continuous_score" if score_type == "continuous" else "average_score"
+
         # Build score matrices for all datasets
-        matrices = self._build_score_matrix(results, layers, positions, target_variables_str)
+        matrices = self._build_score_matrix(results, layers, positions, target_variables_str, score_key=score_key)
 
         if not matrices:
             return
@@ -373,34 +373,46 @@ class PatchResidualStream(InterventionExperiment):
         dataset_name = list(matrices.keys())[-1]
         safe_dataset_name = dataset_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
 
-        # Set title based on method type
-        metric_name = "Attribution Approximation Accuracy" if is_attribution else "Intervention Accuracy"
+        # Set title based on method type and score_type
+        if score_type == "continuous":
+            metric_name = "Continuous Attribution Score" if is_attribution else "Continuous Intervention Score"
+        else:
+            metric_name = "Attribution Approximation Accuracy" if is_attribution else "Intervention Accuracy"
         # Use experiment_id if available, fallback to task_name for compatibility
         experiment_id = results.get("experiment_id", results.get("task_name", "unknown"))
         title = f'{metric_name} - Dataset: {dataset_name}\nExperiment: {experiment_id}\nIntervened Variables: {target_variables_str}'
 
         # Create the heatmap
+        score_suffix = "_continuous" if score_type == "continuous" else ""
         self._create_heatmap(
             score_matrix=score_matrix,
             layers=layers,
             positions=positions,
             title=title,
-            save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_{experiment_id}_variables_{target_variables_str}.png') if save_path else None,
-            is_attribution=is_attribution
+            save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_{experiment_id}_variables_{target_variables_str}{score_suffix}.png') if save_path else None,
+            is_attribution=is_attribution,
+            score_type=score_type
         )
-    
-    def _plot_individual_heatmaps(self, results: Dict, layers: List, positions: List,
-                                 target_variables_str: str, save_path: Optional[str] = None, is_attribution: bool = False):
-        """Create and save/display individual heatmaps for each dataset."""
-        # Build score matrices for all datasets
-        matrices = self._build_score_matrix(results, layers, positions, target_variables_str)
 
-        # Set metric name based on method type
-        metric_name = "Attribution Approximation Accuracy" if is_attribution else "Intervention Accuracy"
+    def _plot_individual_heatmaps(self, results: Dict, layers: List, positions: List,
+                                 target_variables_str: str, save_path: Optional[str] = None, is_attribution: bool = False, score_type: str = "accuracy"):
+        """Create and save/display individual heatmaps for each dataset."""
+        # Determine score key based on score_type
+        score_key = "average_continuous_score" if score_type == "continuous" else "average_score"
+
+        # Build score matrices for all datasets
+        matrices = self._build_score_matrix(results, layers, positions, target_variables_str, score_key=score_key)
+
+        # Set metric name based on method type and score_type
+        if score_type == "continuous":
+            metric_name = "Continuous Attribution Score" if is_attribution else "Continuous Intervention Score"
+        else:
+            metric_name = "Attribution Approximation Accuracy" if is_attribution else "Intervention Accuracy"
         # Use experiment_id if available, fallback to task_name for compatibility
         experiment_id = results.get("experiment_id", results.get("task_name", "unknown"))
 
         # Create individual heatmaps for each dataset
+        score_suffix = "_continuous" if score_type == "continuous" else ""
         for dataset_name, score_matrix in matrices.items():
             # Convert dataset name to a safe filename
             safe_dataset_name = dataset_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
@@ -411,12 +423,13 @@ class PatchResidualStream(InterventionExperiment):
                 layers=layers,
                 positions=positions,
                 title=f'{metric_name} - Dataset: {dataset_name}\nExperiment: {experiment_id}\nIntervened Variables: {target_variables_str}',
-                save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_{experiment_id}_variables_{target_variables_str}.png') if save_path else None,
-                is_attribution=is_attribution
+                save_path=os.path.join(save_path, f'heatmap_dataset_{safe_dataset_name}_{experiment_id}_variables_{target_variables_str}{score_suffix}.png') if save_path else None,
+                is_attribution=is_attribution,
+                score_type=score_type
             )
-    
+
     def _create_heatmap(self, score_matrix: np.ndarray, layers: List, positions: List,
-                       title: str, save_path: Optional[str] = None, is_attribution: bool = False):
+                       title: str, save_path: Optional[str] = None, is_attribution: bool = False, score_type: str = "accuracy"):
         """
         Create and save/display a single heatmap.
 
@@ -427,10 +440,16 @@ class PatchResidualStream(InterventionExperiment):
             title: Title for the heatmap
             save_path: Path to save the heatmap, or None to display it
             is_attribution: Whether this is attribution patching (affects labels)
+            score_type: "accuracy" or "continuous" - affects colorbar label and bounds
         """
-        # Set colorbar label based on method type
-        cbar_label = 'Score (%)' if is_attribution else 'Accuracy (%)'
-        
+        # Set colorbar label based on score_type
+        if score_type == "continuous":
+            cbar_label = 'Score'
+            use_custom_bounds = True  # Allow auto-scaling for continuous scores
+        else:
+            cbar_label = 'Score (%)' if is_attribution else 'Accuracy (%)'
+            use_custom_bounds = False
+
         # Use the consolidated visualization function
         create_heatmap(
             score_matrix=score_matrix,
@@ -440,7 +459,7 @@ class PatchResidualStream(InterventionExperiment):
             save_path=save_path,
             x_label='Position',
             y_label='Layer',
-            use_custom_bounds=False,
+            use_custom_bounds=use_custom_bounds,
             cbar_label=cbar_label,
             figsize=(10, 6)
         )
@@ -503,7 +522,7 @@ class PatchResidualStream(InterventionExperiment):
                     continue
 
                 # Identify regions using clustering on score values
-                output_lines.append(f"\nRegion Breakdown (using natural clustering):")
+                output_lines.append("\nRegion Breakdown (using natural clustering):")
 
                 # Get unique score values and cluster them
                 flat_scores = score_matrix.flatten()
@@ -568,12 +587,12 @@ class PatchResidualStream(InterventionExperiment):
                     # Show actual (layer, position) pairs
                     if region_size <= 20:
                         # Small region - show all pairs
-                        output_lines.append(f"    Cells:")
+                        output_lines.append("    Cells:")
                         for layer, pos, score in region_pairs:
                             output_lines.append(f"      L{layer:2d} @ {pos:15s} ({score:.1%})")
                     else:
                         # Large region - show sample and summary
-                        output_lines.append(f"    Sample cells (top 5 by score):")
+                        output_lines.append("    Sample cells (top 5 by score):")
                         for layer, pos, score in region_pairs[:5]:
                             output_lines.append(f"      L{layer:2d} @ {pos:15s} ({score:.1%})")
 

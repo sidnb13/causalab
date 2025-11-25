@@ -11,6 +11,7 @@ services:
         GIT_EMAIL: ${GIT_EMAIL}
         PROJECT_NAME: ${PROJECT_NAME}
         VARIANT: ${VARIANT}
+        DEPENDENCY_TAGS: ${DEPENDENCY_TAGS:-dev}
     image: ${CONTAINER_NAME}:latest
     container_name: ${CONTAINER_NAME}
     hostname: ${CONTAINER_NAME}

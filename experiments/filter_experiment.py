@@ -1,6 +1,6 @@
 import collections
 import gc
-from typing import Dict, Callable, List, Any, Union
+from typing import Dict, Callable, List, Any
 
 import torch
 from tqdm import tqdm
@@ -130,7 +130,7 @@ class FilterExperiment:
         # Report overall filtering results
         if verbose and total_original > 0:
             overall_keep_rate = (total_kept / total_original) * 100
-            print(f"\nTotal filtering results:")
+            print("\nTotal filtering results:")
             print(f"Original examples: {total_original}")
             print(f"Kept examples: {total_kept}")
             print(f"Overall keep rate: {overall_keep_rate:.1f}%")

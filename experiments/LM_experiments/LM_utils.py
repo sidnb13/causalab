@@ -1,6 +1,5 @@
 from experiments.pyvene_core import _prepare_intervenable_inputs
 import torch
-import logging
 from typing import Callable, Any, Optional
 
 

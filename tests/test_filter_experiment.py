@@ -1,8 +1,6 @@
 import pytest
 from unittest import mock
 import torch
-import collections
-import gc
 
 from experiments.filter_experiment import FilterExperiment
 from causal.counterfactual_dataset import CounterfactualDataset

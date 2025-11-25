@@ -2,12 +2,10 @@
 
 import pytest
 import torch
-import numpy as np
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from neural.pipeline import Pipeline
 from neural.model_units import AtomicModelUnit
-from experiments.pyvene_core import _train_intervention
 
 
 class TestTrainIntervention:

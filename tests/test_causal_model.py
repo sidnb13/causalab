@@ -1,6 +1,5 @@
 import unittest
 import random
-from collections import defaultdict
 
 from causal.causal_model import CausalModel
 

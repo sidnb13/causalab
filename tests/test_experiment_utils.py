@@ -7,7 +7,6 @@ Tests the compute_custom_scores() function and other utilities.
 import pytest
 import torch
 import numpy as np
-from unittest.mock import Mock, patch
 
 from experiments.experiment_utils import compute_custom_scores
 

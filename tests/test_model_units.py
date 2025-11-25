@@ -4,7 +4,6 @@ pytest unit-tests for the core abstractions in model_units.py
 """
 
 import pytest
-import torch
 
 import neural.model_units as MU
 import neural.featurizers as F  # the module we just rewrote

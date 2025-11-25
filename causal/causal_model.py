@@ -1,19 +1,17 @@
 import random
 import copy
 import itertools
-import random
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import networkx as nx
-from datasets import Dataset, load_dataset
+from datasets import Dataset
 
 # visualization libraries
 from dash import Dash, html
 from dash.dependencies import Input, Output, State
 import dash_cytoscape as cyto
 
-from causal.counterfactual_dataset import CounterfactualDataset
 
 class DEFAULT_COLORS:
     """default colors for displaying causal model with dash"""

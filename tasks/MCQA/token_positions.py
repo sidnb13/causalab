@@ -6,7 +6,6 @@ such as answer symbols, periods, and the last token.
 
 import re
 from neural.LM_units import TokenPosition, get_last_token_index, get_substring_token_ids
-from .causal_models import positional_causal_model
 
 
 def get_symbol_index(input_sample, pipeline, index):

@@ -1,6 +1,6 @@
 import random
 import re
-from causal.causal_model import CausalModel, CounterfactualDataset
+from causal.causal_model import CausalModel
 from neural.LM_units import TokenPosition, get_last_token_index
 from tasks.task import Task
 
@@ -251,7 +251,7 @@ def get_symbol_index(input_sample, pipeline, index):
     )
 
     if end_idx_in_content == -1:
-        raise ValueError(f"Could not find tokenized substring in prompt")
+        raise ValueError("Could not find tokenized substring in prompt")
 
     # Step 6: Convert to padded coordinate system
     token_index_in_padded = content_start_idx + end_idx_in_content - 1
@@ -357,7 +357,7 @@ def get_correct_symbol_index(input_sample, pipeline):
     )
 
     if end_idx_in_content == -1:
-        raise ValueError(f"Could not find tokenized substring in prompt")
+        raise ValueError("Could not find tokenized substring in prompt")
 
     # Step 6: Convert to padded coordinate system
     token_index_in_padded = content_start_idx + end_idx_in_content - 1

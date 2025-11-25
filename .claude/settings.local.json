@@ -5,7 +5,10 @@
       "Bash(.venv/bin/pytest tests/integration/test_attribution_patching_basic.py -v -s)",
       "Bash(.venv/bin/pytest:*)",
       "Bash(uv run:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(pip install:*)",
+      "Bash(git submodule update:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []

@@ -11,7 +11,7 @@ from sklearn.decomposition import TruncatedSVD
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from causal.causal_utils import compute_attribution_scores, compute_interchange_scores
+from causal.causal_utils import CheapArgmaxChecker, compute_attribution_scores, compute_interchange_scores
 from causal.counterfactual_dataset import CounterfactualDataset
 from experiments.config import DEFAULT_CONFIG
 from experiments.pyvene_core import (
@@ -71,7 +71,7 @@ class InterventionExperiment:
         if config is not None:
             self.config.update(config)
 
-    def perform_interventions(self, datasets, verbose: bool = False, save_dir=None, include_actual_outputs: bool = False, target_variables_list=None, causal_model=None, checker=None) -> Dict:
+    def perform_interventions(self, datasets, verbose: bool = False, save_dir=None, include_actual_outputs: bool = False, target_variables_list=None, causal_model=None, checker=None, get_correct_token_fn: Callable = None, get_other_choice_tokens_fn: Callable = None) -> Dict:
         """
         Run interchange interventions and return raw outputs with causal model inputs.
 
@@ -108,6 +108,10 @@ class InterventionExperiment:
                          If provided along with target_variables_list and checker, scores will be computed automatically.
             checker: Optional function for comparing outputs. If provided along with target_variables_list and causal_model,
                     scores will be computed automatically.
+            get_correct_token_fn: Optional function to extract correct answer token from input dict.
+                                 Required for continuous score computation. Returns token string.
+            get_other_choice_tokens_fn: Optional function to extract other choice tokens from input dict.
+                                       Required for continuous score computation. Returns list of token strings.
 
         Returns:
             Dictionary with structure:
@@ -182,6 +186,13 @@ class InterventionExperiment:
                     output_scores=self.config["output_scores"],
                     batch_size=self.config["evaluation_batch_size"]
                 )
+
+                # Compute continuous scores BEFORE top-k conversion (need full logits)
+                if get_correct_token_fn is not None and get_other_choice_tokens_fn is not None and self.config["output_scores"]:
+                    raw_outputs = self._compute_continuous_scores(
+                        raw_outputs, datasets[dataset_name],
+                        get_correct_token_fn, get_other_choice_tokens_fn
+                    )
 
                 # Convert to top-K immediately to save memory (before moving to CPU)
                 if self.config["output_scores"]:
@@ -421,11 +432,13 @@ class InterventionExperiment:
         for batch_dict in outputs:
             converted_batch = {}
 
-            # Copy sequences and string as-is
+            # Copy sequences, string, and continuous_scores as-is
             if "sequences" in batch_dict:
                 converted_batch["sequences"] = batch_dict["sequences"]
             if "string" in batch_dict:
                 converted_batch["string"] = batch_dict["string"]
+            if "continuous_scores" in batch_dict:
+                converted_batch["continuous_scores"] = batch_dict["continuous_scores"]
 
             # Convert scores to top-k format (or remove if k is None/0)
             if "scores" in batch_dict and batch_dict["scores"] and k and k > 0:
@@ -543,6 +556,70 @@ class InterventionExperiment:
             serializable_outputs.append(serializable_batch)
 
         return serializable_outputs
+
+    def _compute_continuous_scores(self, raw_outputs, dataset, get_correct_token_fn, get_other_choice_tokens_fn):
+        """
+        Compute continuous scores from full logits before top-k conversion.
+
+        Args:
+            raw_outputs: List of batch dicts with 'scores' containing full logits
+            dataset: CounterfactualDataset with input examples
+            get_correct_token_fn: Returns correct token string from input dict
+            get_other_choice_tokens_fn: Returns list of other choice token strings
+
+        Returns:
+            raw_outputs with 'continuous_scores' added to each batch
+        """
+        example_idx = 0
+        dataset_list = list(dataset)
+
+        for batch_dict in raw_outputs:
+            if "scores" not in batch_dict or not batch_dict["scores"]:
+                continue
+
+            # Full logits for last generated token: (batch_size, vocab_size)
+            logits = batch_dict["scores"][-1]
+            batch_size = logits.shape[0]
+
+            # Get token IDs for this batch
+            correct_ids, other_ids_list = [], []
+            for i in range(batch_size):
+                if example_idx + i >= len(dataset_list):
+                    break
+                input_dict = dataset_list[example_idx + i]["input"]
+
+                # Tokenize correct answer
+                correct_token = get_correct_token_fn(input_dict)
+                enc = self.pipeline.tokenizer.encode(correct_token, add_special_tokens=False) if correct_token else []
+                correct_ids.append(enc[0] if enc else 0)
+
+                # Tokenize other choices
+                other_tokens = get_other_choice_tokens_fn(input_dict) or []
+                other_ids = [
+                    self.pipeline.tokenizer.encode(t, add_special_tokens=False)[0]
+                    for t in other_tokens
+                    if self.pipeline.tokenizer.encode(t, add_special_tokens=False)
+                ]
+                other_ids_list.append(other_ids if other_ids else [0])
+
+            # Pad and tensorize
+            actual_batch = len(correct_ids)
+            correct_tensor = torch.tensor(correct_ids, device=logits.device)
+            max_choices = max(len(x) for x in other_ids_list)
+            padded = [ids + [0] * (max_choices - len(ids)) for ids in other_ids_list]
+            other_tensor = torch.tensor(padded, device=logits.device)
+
+            # Compute continuous score using CheapArgmaxChecker's static method
+            logits_batch = logits[:actual_batch]
+            continuous_scores_tensor = CheapArgmaxChecker.compute_score(
+                logits_batch, correct_tensor, other_tensor
+            )
+            scores = continuous_scores_tensor.detach().cpu().tolist()
+
+            batch_dict["continuous_scores"] = scores
+            example_idx += batch_size
+
+        return raw_outputs
 
     def _compute_actual_outputs(self, dataset: CounterfactualDataset, verbose: bool = False):
         """
